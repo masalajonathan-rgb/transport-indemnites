@@ -86,32 +86,8 @@ def total_regularisations(user_id, ym):
 
     return round(sum(r["montant"] for r in rows), 2)
 # ================= INIT ADMIN (SUPABASE) =================
-def init_admin():
-    admin = (
-        supabase
-        .table("users")
-        .select("id")
-        .eq("login", "admin")
-        .execute()
-        .data
-    )
 
-    if admin:
-        return  # admin déjà existant
 
-    pwd = bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode()
-
-    supabase.table("users").insert({
-        "nom": "Admin",
-        "prenom": "Root",
-        "login": "admin",
-        "password": pwd,
-        "km": 0,
-        "is_admin": True,
-        "must_change_pwd": True
-    }).execute()
-
-init_admin()
 
 # ================= CALCUL MOIS =================
 def total_mois(user_id, ym, km):
@@ -457,7 +433,220 @@ def calendrier(user_id, admin=False):
 
     return jours
 # ================= UTILISATEURS =================
+# ================= UTILISATEURS =================
 if menu == "Utilisateurs":
+    st.header("Gestion des utilisateurs")
+
+    # ========= RÉCUPÉRATION DES UTILISATEURS =========
+    res = supabase.table("users") \
+        .select("id, nom, prenom, login, km, is_admin") \
+        .order("nom") \
+        .execute()
+
+    users = res.data or []
+
+    # ========= CRÉATION UTILISATEUR =========
+    st.subheader("➕ Créer un utilisateur")
+
+    with st.form(key="create_user_form"):
+        nom_u = st.text_input("Nom")
+        prenom_u = st.text_input("Prénom")
+        login_u = st.text_input("Login")
+        km_u = st.number_input("Kilomètres domicile-travail", min_value=0.0)
+        pwd_u = st.text_input("Mot de passe initial", type="password")
+        is_admin_u = st.checkbox("Administrateur")
+
+        submit_create = st.form_submit_button("Créer")
+
+        if submit_create:
+            if not login_u or not pwd_u:
+                st.error("Login et mot de passe obligatoires")
+            else:
+                try:
+                    hpwd = bcrypt.hashpw(
+                        pwd_u.encode(),
+                        bcrypt.gensalt()
+                    ).decode()
+
+                    supabase.table("users").insert({
+                        "nom": nom_u.strip(),
+                        "prenom": prenom_u.strip(),
+                        "login": login_u.lower().strip(),
+                        "password": hpwd,
+                        "km": float(km_u),
+                        "is_admin": bool(is_admin_u),
+                        "must_change_pwd": True
+                    }).execute()
+
+                    st.success("Utilisateur créé")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Erreur création utilisateur : {e}")
+
+    st.divider()
+
+    # ========= MODIFICATION / SUPPRESSION =========
+    st.subheader("✏️ Modifier / Supprimer un utilisateur")
+
+    if not users:
+        st.info("Aucun utilisateur disponible")
+    else:
+        user_map = {
+            f"{u['prenom']} {u['nom']} ({u['login']})": u
+            for u in users
+        }
+
+        selected_label = st.selectbox(
+            "Utilisateur",
+            list(user_map.keys())
+        )
+
+        u = user_map[selected_label]
+
+        with st.form("edit_user_form"):
+            nom_e = st.text_input("Nom", value=u["nom"])
+            prenom_e = st.text_input("Prénom", value=u["prenom"])
+            login_e = st.text_input("Login", value=u["login"])
+            km_e = st.number_input(
+                "Kilomètres domicile-travail",
+                min_value=0.0,
+                value=float(u["km"])
+            )
+            is_admin_e = st.checkbox(
+                "Administrateur",
+                value=bool(u["is_admin"])
+            )
+
+            col1, col2 = st.columns(2)
+            save = col1.form_submit_button("💾 Enregistrer")
+            delete = col2.form_submit_button("🗑️ Supprimer")
+
+            if save:
+                try:
+                    supabase.table("users") \
+                        .update({
+                            "nom": nom_e.strip(),
+                            "prenom": prenom_e.strip(),
+                            "login": login_e.lower().strip(),
+                            "km": float(km_e),
+                            "is_admin": bool(is_admin_e)
+                        }) \
+                        .eq("id", u["id"]) \
+                        .execute()
+
+                    st.success("Utilisateur modifié")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Erreur modification : {e}")
+
+            if delete:
+                try:
+                    supabase.table("users") \
+                        .delete() \
+                        .eq("id", u["id"]) \
+                        .execute()
+
+                    st.warning("Utilisateur supprimé")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Erreur suppression : {e}")
+
+    st.divider()
+
+    # ========= IMPORT UTILISATEURS (EXCEL) =========
+    st.subheader("📥 Import utilisateurs (Excel)")
+
+    modele = pd.DataFrame(
+        columns=["nom", "prenom", "login", "km", "password", "is_admin"]
+    )
+    buf = io.BytesIO()
+    modele.to_excel(buf, index=False)
+    buf.seek(0)
+
+    st.download_button(
+        "📄 Télécharger le template Excel",
+        buf,
+        "modele_utilisateurs.xlsx"
+    )
+
+    with st.form("admin_import_users_form"):
+        file = st.file_uploader(
+            "Sélectionner le fichier Excel",
+            type="xlsx"
+        )
+        submit_import = st.form_submit_button("📥 Importer les utilisateurs")
+
+        if submit_import:
+            if not file:
+                st.warning("Veuillez sélectionner un fichier Excel.")
+            else:
+                try:
+                    df = pd.read_excel(file)
+
+                    colonnes = {
+                        "nom", "prenom", "login",
+                        "km", "password", "is_admin"
+                    }
+
+                    if not colonnes.issubset(df.columns):
+                        st.error(
+                            "Colonnes requises : "
+                            + ", ".join(colonnes)
+                        )
+                    else:
+                        ajoutes, erreurs = 0, 0
+
+                        for _, r in df.iterrows():
+                            try:
+                                hpwd = bcrypt.hashpw(
+                                    str(r["password"]).encode(),
+                                    bcrypt.gensalt()
+                                ).decode()
+
+                                supabase.table("users").insert({
+                                    "nom": str(r["nom"]).strip(),
+                                    "prenom": str(r["prenom"]).strip(),
+                                    "login": str(r["login"]).lower().strip(),
+                                    "password": hpwd,
+                                    "km": float(r["km"]),
+                                    "is_admin": bool(r["is_admin"]),
+                                    "must_change_pwd": True
+                                }).execute()
+
+                                ajoutes += 1
+
+                            except Exception:
+                                erreurs += 1
+
+                        st.success(
+                            f"Import terminé : {ajoutes} ajouté(s), "
+                            f"{erreurs} erreur(s)."
+                        )
+                        st.rerun()
+
+                except Exception as e:
+                    st.error(f"Erreur import : {e}")
+
+    st.divider()
+
+    # ========= EXPORT UTILISATEURS =========
+    st.subheader("📊 Exporter la liste des utilisateurs")
+
+    df_users = pd.DataFrame(users)
+
+    buf_users = io.BytesIO()
+    df_users.to_excel(buf_users, index=False)
+    buf_users.seek(0)
+
+    st.download_button(
+        "📊 Télécharger la liste des utilisateurs (Excel)",
+        buf_users,
+        "liste_utilisateurs.xlsx"
+    )
+
     st.header("Gestion des utilisateurs")
 
     # ========= RÉCUPÉRATION DES UTILISATEURS =========
@@ -473,7 +662,7 @@ if menu == "Utilisateurs":
     # ========= CRÉATION UTILISATEUR =========
     st.subheader("➕ Créer un utilisateur")
 
-    with st.form("create_user_form"):
+    with st.form(key="admin_create_user_form"):
         nom_u = st.text_input("Nom")
         prenom_u = st.text_input("Prénom")
         login_u = st.text_input("Login")
@@ -526,7 +715,7 @@ if menu == "Utilisateurs":
 
     u = user_map[selected_label]
 
-    with st.form("edit_user_form"):
+    with st.form("admin_edit_user_form"):
         nom_e = st.text_input("Nom", value=u["nom"])
         prenom_e = st.text_input("Prénom", value=u["prenom"])
         login_e = st.text_input("Login", value=u["login"])
@@ -555,6 +744,8 @@ if menu == "Utilisateurs":
             st.rerun()
 
     st.divider()
+
+
 
     # ========= EXPORT UTILISATEURS =========
     st.subheader("📊 Exporter la liste des utilisateurs")
