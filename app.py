@@ -161,38 +161,32 @@ def montant_final_paye(user_id, ym, km):
         "plafond_atteint": brut > PLAFOND_MENSUEL
     }
 # ================= AUTH (SUPABASE) =================
-def login_user(login: str, pwd: str):
+def login_user(login, pwd):
     try:
         res = (
             supabase
             .table("users")
-            .select(
-                "id, nom, prenom, login, password, km, is_admin, must_change_pwd"
-            )
-            .eq("login", login.lower().strip())
-            .limit(1)
+            .select("*")
+            .eq("login", login)
             .execute()
         )
-    except Exception as e:
-        st.error("Erreur accès base (RLS / Supabase)")
-        st.stop()
 
-    if not res.data:
-        return None
+        if not res.data:
+            return None
 
-    user = res.data[0]
+        user = res.data[0]
 
-    try:
-        ok = bcrypt.checkpw(
+        if bcrypt.checkpw(
             pwd.encode(),
             user["password"].encode()
-        )
-    except Exception:
+        ):
+            return user
+
         return None
 
-    return user if ok else None
-
-
+    except Exception as e:
+        st.error(f"Erreur login Supabase : {e}")
+        return None
 
 
 
