@@ -162,48 +162,38 @@ def montant_final_paye(user_id, ym, km):
     }
 # ================= AUTH (SUPABASE) =================
 def login_user(login: str, pwd: str):
-    res = (
-        supabase
-        .table("users")
-        .select("id, nom, prenom, login, password, km, is_admin, must_change_pwd")
-        .eq("login", login.lower().strip())
-        .limit(1)
-        .execute()
-    )
+    try:
+        res = (
+            supabase
+            .table("users")
+            .select(
+                "id, nom, prenom, login, password, km, is_admin, must_change_pwd"
+            )
+            .eq("login", login.lower().strip())
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        st.error("Erreur accès base (RLS / Supabase)")
+        st.stop()
 
     if not res.data:
         return None
 
     user = res.data[0]
 
-    if not bcrypt.checkpw(
-        pwd.encode(),
-        user["password"].encode()
-    ):
+    try:
+        ok = bcrypt.checkpw(
+            pwd.encode(),
+            user["password"].encode()
+        )
+    except Exception:
         return None
 
-    return user
+    return user if ok else None
 
-    res = (
-        supabase
-        .table("users")
-        .select("*")
-        .eq("login", login)
-        .limit(1)
-        .execute()
-        .data
-    )
 
-    if not res:
-        return None
 
-    user = res[0]
-
-    # mot de passe stocké en bcrypt (string)
-    if bcrypt.checkpw(pwd.encode(), user["password"].encode()):
-        return user
-
-    return None
 
 
 # ================= SESSION STATE INIT =================
@@ -688,6 +678,7 @@ if menu == "Utilisateurs":
         st.info("Aucun utilisateur à exporter.")
 
 # ================= ENCODAGE =================
+# ================= ENCODAGE =================
 save_clicked = False
 send_clicked = False
 
@@ -721,11 +712,11 @@ if menu == "Encodage":
         TRANSPORTS
     )
 
+    # ===== Boutons =====
     col1, col2, col3 = st.columns([1, 1, 2])
 
     with col1:
-        if st.button("✏️ Modifier l'encodage"):
-            st.session_state.edit_mode = True
+        btn_modifier = st.button("✏️ Modifier l'encodage")
 
     with col2:
         save_clicked = st.button("💾 Enregistrer")
@@ -740,14 +731,28 @@ if menu == "Encodage":
     # ===== Calendrier =====
     jours = calendrier(cible, admin=is_admin)
 
-    # ===== SUPPRESSION =====
+    # ===== Détection mois validé =====
+    mois_valide = any(validated for _, _, _, validated, _ in jours)
+
+    # ===== Blocage TOTAL utilisateur si mois validé =====
+    if mois_valide and not is_admin:
+        st.info("🔒 Ce mois est validé. Consultation uniquement.")
+        st.session_state.edit_mode = False
+        st.stop()
+
+    # ===== Activation édition =====
+    if btn_modifier:
+        st.session_state.edit_mode = True
+
+    # ===== Suppression =====
     if st.session_state.edit_mode and st.session_state.jours_selectionnes:
         if st.button("🗑️ Supprimer les jours sélectionnés"):
             for d in st.session_state.jours_selectionnes:
                 jour = f"{ym}-{d:02d}"
-                supabase.table("trajets").delete()\
-                    .eq("user_id", cible)\
-                    .eq("jour", jour)\
+                supabase.table("trajets") \
+                    .delete() \
+                    .eq("user_id", cible) \
+                    .eq("jour", jour) \
                     .execute()
 
             st.session_state.jours_selectionnes.clear()
@@ -755,42 +760,44 @@ if menu == "Encodage":
             st.success("Jour(s) supprimé(s)")
             st.rerun()
 
-    # ===== BLOCAGE USER =====
-    if not is_admin and any(v for _, _, _, v, _ in jours):
-        st.info("Ce mois est validé. Consultation uniquement.")
-        st.stop()
-
-    # ===== ENREGISTREMENT =====
+    # ===== Enregistrement =====
     if save_clicked:
         for d, val, existe, validated, sent in jours:
             jour = f"{ym}-{d:02d}"
 
+            # ➕ Ajout
             if not existe and val:
                 supabase.table("trajets").insert({
                     "user_id": cible,
                     "jour": jour,
                     "transport": transport_global,
-                    "validated": 0
+                    "validated": 0,
+                    "sent_for_validation": 0
                 }).execute()
 
+            # ✏️ Modification / suppression
             elif existe and st.session_state.edit_mode and d in st.session_state.jours_selectionnes:
                 if not val:
-                    supabase.table("trajets").delete()\
-                        .eq("user_id", cible)\
-                        .eq("jour", jour)\
+                    supabase.table("trajets") \
+                        .delete() \
+                        .eq("user_id", cible) \
+                        .eq("jour", jour) \
                         .execute()
                 else:
-                    supabase.table("trajets").update({
-                        "transport": transport_global,
-                        "validated": 0
-                    }).eq("user_id", cible)\
-                     .eq("jour", jour)\
-                     .execute()
+                    supabase.table("trajets") \
+                        .update({
+                            "transport": transport_global,
+                            "validated": 0
+                        }) \
+                        .eq("user_id", cible) \
+                        .eq("jour", jour) \
+                        .execute()
 
         st.session_state.edit_mode = False
         st.session_state.jours_selectionnes.clear()
         st.success("Encodage enregistré")
         st.rerun()
+
 # ===== Envoi validation =====
 if send_clicked:
     supabase.table("trajets") \
@@ -801,6 +808,19 @@ if send_clicked:
 
     st.success("Mois envoyé pour validation")
     st.rerun()
+
+    supabase.table("trajets") \
+        .update({"sent_for_validation": True}) \
+        .eq("user_id", cible) \
+        .like("jour", f"{ym}%") \
+        .execute()
+
+    st.success("Mois envoyé pour validation")
+    st.rerun()
+  
+
+
+
 
 
 # ===================== ENREGISTREMENT =====================
@@ -850,66 +870,73 @@ if save_clicked:
 # ================= VALIDATION =================
 if menu == "Validation":
     st.header("Validation des indemnités")
-    # VALIDATION GLOBALE
-    # =============================
     st.divider()
+
+    # ==================================================
+    # VALIDATION GLOBALE (ADMIN UNIQUEMENT)
+    # ==================================================
     st.subheader("Validation globale")
 
-# =============================
-# VALIDATION GLOBALE (ADMIN)
-# =============================
-if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
-    res_users = (
-        supabase
-        .table("users")
-        .select("id, km")
-        .neq("login", "admin")
-        .execute()
-    )
+    if is_admin:
+        if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
 
-    if not res_users.data:
-        st.warning("Aucun utilisateur à valider.")
-        st.stop()
+            res_users = (
+                supabase
+                .table("users")
+                .select("id, km")
+                .neq("login", "admin")
+                .execute()
+            )
 
-    for u in res_users.data:
-        uid = u["id"]
-        km_u = u["km"]
+            if not res_users.data:
+                st.warning("Aucun utilisateur à valider.")
+                st.stop()
 
-        brut, plafonne = total_mois(uid, ym, km_u)
+            for u in res_users.data:
+                uid_u = u["id"]
+                km_u = u["km"]
 
-        # Supprimer validation existante
-        supabase.table("validations") \
-            .delete() \
-            .eq("user_id", uid) \
-            .eq("mois", ym) \
-            .execute()
+                brut, plafonne = total_mois(uid_u, ym, km_u)
 
-        # Créer validation
-        supabase.table("validations").insert({
-            "user_id": uid,
-            "mois": ym,
-            "km_utilise": km_u,
-            "brut": brut,
-            "plafonne": plafonne
-        }).execute()
+                # Supprimer validation existante
+                supabase.table("validations") \
+                    .delete() \
+                    .eq("user_id", uid_u) \
+                    .eq("mois", ym) \
+                    .execute()
 
-        # Verrouiller trajets
-        supabase.table("trajets") \
-            .update({"validated": 1}) \
-            .eq("user_id", uid) \
-            .like("jour", f"{ym}-%") \
-            .execute()
+                # Créer validation
+                supabase.table("validations").insert({
+                    "user_id": uid_u,
+                    "mois": ym,
+                    "km_utilise": km_u,
+                    "brut": brut,
+                    "plafonne": plafonne
+                }).execute()
 
-    st.success("Tous les utilisateurs ont été validés")
-    st.rerun()
+                # Verrouiller trajets
+                supabase.table("trajets") \
+                    .update({"validated": 1}) \
+                    .eq("user_id", uid_u) \
+                    .like("jour", f"{ym}-%") \
+                    .execute()
 
-    # Sélection utilisateur
-    # =============================
+            st.success("Tous les utilisateurs ont été validés")
+            st.rerun()
+
+    st.divider()
+
+    # ==================================================
+    # VALIDATION INDIVIDUELLE
+    # ==================================================
+    st.subheader("Validation par utilisateur")
+
     res_users = (
         supabase
         .table("users")
         .select("id, prenom, nom, km")
         .neq("login", "admin")
+        .order("nom")
         .execute()
     )
 
@@ -930,16 +957,12 @@ if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
     if selection == labels[0]:
         st.stop()
 
-    # =============================
-    # CONTEXTE UTILISATEUR
-    # =============================
+    # ===== Contexte utilisateur =====
     user = user_map[selection]
     user_id = user["id"]
     km_user = float(user["km"])
 
-    # =============================
-    # Ancienne validation ?
-    # =============================
+    # ===== Ancienne validation ? =====
     ancienne = None
     ancien_brut = ancien_plafonne = ancien_km = ancienne_date = None
 
@@ -961,9 +984,7 @@ if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
 
     km_utilise = ancien_km if ancien_km is not None else km_user
 
-    # =============================
-    # Calculs financiers
-    # =============================
+    # ===== Calculs =====
     montants = montant_final_paye(user_id, ym, km_utilise)
 
     brut_calcule = montants["brut"]
@@ -971,9 +992,7 @@ if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
     regul = montants["regularisation"]
     total_verse = montants["total_paye"]
 
-    # =============================
-    # Détail des jours
-    # =============================
+    # ===== Détail des jours =====
     res_jours = (
         supabase
         .table("trajets")
@@ -1001,9 +1020,7 @@ if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
 
     st.divider()
 
-    # =============================
-    # Synthèse
-    # =============================
+    # ===== Synthèse =====
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Montant brut", f"{brut_calcule:.2f} €")
     c2.metric("Plafonné", f"{plafonne_calcule:.2f} €")
@@ -1019,12 +1036,10 @@ if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
 
     st.divider()
 
-    # =============================
-    # Boutons validation
-    # =============================
+    # ===== Boutons =====
     colb1, colb2 = st.columns(2)
 
-    # ----- VALIDATION INITIALE -----
+    # --- Validation initiale ---
     with colb1:
         if st.button("✅ Valider", disabled=ancienne is not None):
             supabase.table("validations").insert({
@@ -1044,7 +1059,7 @@ if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
             st.success("Mois validé")
             st.rerun()
 
-    # ----- REVALIDATION -----
+    # --- Revalidation ---
     with colb2:
         if st.button("🔁 Revalider", disabled=ancienne is None):
 
@@ -1069,8 +1084,6 @@ if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
 
             st.success("Mois revalidé avec régularisation")
             st.rerun()
-
-    # =============================
 
 if menu == "Exports":
     st.header("Export mensuel des indemnités")
