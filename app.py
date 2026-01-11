@@ -161,7 +161,29 @@ def montant_final_paye(user_id, ym, km):
         "plafond_atteint": brut > PLAFOND_MENSUEL
     }
 # ================= AUTH (SUPABASE) =================
-def login_user(login, pwd):
+def login_user(login: str, pwd: str):
+    res = (
+        supabase
+        .table("users")
+        .select("id, nom, prenom, login, password, km, is_admin, must_change_pwd")
+        .eq("login", login.lower().strip())
+        .limit(1)
+        .execute()
+    )
+
+    if not res.data:
+        return None
+
+    user = res.data[0]
+
+    if not bcrypt.checkpw(
+        pwd.encode(),
+        user["password"].encode()
+    ):
+        return None
+
+    return user
+
     res = (
         supabase
         .table("users")
@@ -434,21 +456,24 @@ def calendrier(user_id, admin=False):
     return jours
 # ================= UTILISATEURS =================
 # ================= UTILISATEURS =================
+# ================= UTILISATEURS =================
 if menu == "Utilisateurs":
     st.header("Gestion des utilisateurs")
 
     # ========= RÉCUPÉRATION DES UTILISATEURS =========
-    res = supabase.table("users") \
-        .select("id, nom, prenom, login, km, is_admin") \
-        .order("nom") \
+    res = (
+        supabase
+        .table("users")
+        .select("id, nom, prenom, login, km, is_admin")
+        .order("nom")
         .execute()
-
+    )
     users = res.data or []
 
     # ========= CRÉATION UTILISATEUR =========
     st.subheader("➕ Créer un utilisateur")
 
-    with st.form(key="create_user_form"):
+    with st.form(key="admin_create_user_form"):
         nom_u = st.text_input("Nom")
         prenom_u = st.text_input("Prénom")
         login_u = st.text_input("Login")
@@ -499,12 +524,13 @@ if menu == "Utilisateurs":
 
         selected_label = st.selectbox(
             "Utilisateur",
-            list(user_map.keys())
+            list(user_map.keys()),
+            key="admin_user_select"
         )
 
         u = user_map[selected_label]
 
-        with st.form("edit_user_form"):
+        with st.form(key="admin_edit_user_form"):
             nom_e = st.text_input("Nom", value=u["nom"])
             prenom_e = st.text_input("Prénom", value=u["prenom"])
             login_e = st.text_input("Login", value=u["login"])
@@ -562,17 +588,19 @@ if menu == "Utilisateurs":
     modele = pd.DataFrame(
         columns=["nom", "prenom", "login", "km", "password", "is_admin"]
     )
-    buf = io.BytesIO()
-    modele.to_excel(buf, index=False)
-    buf.seek(0)
+    buf_tpl = io.BytesIO()
+    modele.to_excel(buf_tpl, index=False)
+    buf_tpl.seek(0)
 
     st.download_button(
         "📄 Télécharger le template Excel",
-        buf,
-        "modele_utilisateurs.xlsx"
+        buf_tpl,
+        file_name="modele_utilisateurs.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="admin_users_template_download"
     )
 
-    with st.form("admin_import_users_form"):
+    with st.form(key="admin_import_users_form"):
         file = st.file_uploader(
             "Sélectionner le fichier Excel",
             type="xlsx"
@@ -617,7 +645,6 @@ if menu == "Utilisateurs":
                                 }).execute()
 
                                 ajoutes += 1
-
                             except Exception:
                                 erreurs += 1
 
@@ -632,134 +659,34 @@ if menu == "Utilisateurs":
 
     st.divider()
 
-    # ========= EXPORT UTILISATEURS =========
+    # ========= EXPORT UTILISATEURS (ADMIN SEULEMENT) =========
     st.subheader("📊 Exporter la liste des utilisateurs")
 
-    df_users = pd.DataFrame(users)
-
-    buf_users = io.BytesIO()
-    df_users.to_excel(buf_users, index=False)
-    buf_users.seek(0)
-
-    st.download_button(
-        "📊 Télécharger la liste des utilisateurs (Excel)",
-        buf_users,
-        "liste_utilisateurs.xlsx"
-    )
-
-    st.header("Gestion des utilisateurs")
-
-    # ========= RÉCUPÉRATION DES UTILISATEURS =========
-    users = (
+    response = (
         supabase
         .table("users")
-        .select("id, nom, prenom, login, km, is_admin")
+        .select("nom, prenom, login, km, is_admin")
         .order("nom")
         .execute()
-        .data
     )
 
-    # ========= CRÉATION UTILISATEUR =========
-    st.subheader("➕ Créer un utilisateur")
+    if response.data:
+        df_users = pd.DataFrame(response.data)
 
-    with st.form(key="admin_create_user_form"):
-        nom_u = st.text_input("Nom")
-        prenom_u = st.text_input("Prénom")
-        login_u = st.text_input("Login")
-        km_u = st.number_input("Kilomètres domicile-travail", min_value=0.0)
-        pwd_u = st.text_input("Mot de passe initial", type="password")
-        is_admin_u = st.checkbox("Administrateur")
+        buf_users = io.BytesIO()
+        df_users.to_excel(buf_users, index=False)
+        buf_users.seek(0)
 
-        submit_create = st.form_submit_button("Créer")
+        st.download_button(
+            label="📥 Télécharger la liste des utilisateurs (Excel)",
+            data=buf_users,
+            file_name="liste_utilisateurs.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="admin_users_export_only"
+        )
+    else:
+        st.info("Aucun utilisateur à exporter.")
 
-        if submit_create:
-            if not login_u or not pwd_u:
-                st.error("Login et mot de passe obligatoires")
-            else:
-                hpwd = bcrypt.hashpw(pwd_u.encode(), bcrypt.gensalt()).decode()
-                try:
-                    supabase.table("users").insert({
-                        "nom": nom_u.strip(),
-                        "prenom": prenom_u.strip(),
-                        "login": login_u.lower().strip(),
-                        "password": hpwd,
-                        "km": km_u,
-                        "is_admin": is_admin_u,
-                        "must_change_pwd": True
-                    }).execute()
-
-                    st.success("Utilisateur créé")
-                    st.rerun()
-                except Exception:
-                    st.error("Login déjà existant")
-
-    st.divider()
-
-    # ========= MODIFICATION / SUPPRESSION =========
-    st.subheader("✏️ Modifier / Supprimer un utilisateur")
-
-    if not users:
-        st.info("Aucun utilisateur disponible")
-        st.stop()
-
-    user_map = {
-        f"{u['prenom']} {u['nom']} ({u['login']})": u
-        for u in users
-    }
-
-    selected_label = st.selectbox(
-        "Utilisateur",
-        list(user_map.keys()),
-        key="user_select_admin"
-    )
-
-    u = user_map[selected_label]
-
-    with st.form("admin_edit_user_form"):
-        nom_e = st.text_input("Nom", value=u["nom"])
-        prenom_e = st.text_input("Prénom", value=u["prenom"])
-        login_e = st.text_input("Login", value=u["login"])
-        km_e = st.number_input("Kilomètres domicile-travail", min_value=0.0, value=float(u["km"]))
-        is_admin_e = st.checkbox("Administrateur", value=bool(u["is_admin"]))
-
-        col1, col2 = st.columns(2)
-        save = col1.form_submit_button("💾 Enregistrer")
-        delete = col2.form_submit_button("🗑️ Supprimer")
-
-        if save:
-            supabase.table("users").update({
-                "nom": nom_e.strip(),
-                "prenom": prenom_e.strip(),
-                "login": login_e.lower().strip(),
-                "km": km_e,
-                "is_admin": is_admin_e
-            }).eq("id", u["id"]).execute()
-
-            st.success("Utilisateur modifié")
-            st.rerun()
-
-        if delete:
-            supabase.table("users").delete().eq("id", u["id"]).execute()
-            st.warning("Utilisateur supprimé")
-            st.rerun()
-
-    st.divider()
-
-
-
-    # ========= EXPORT UTILISATEURS =========
-    st.subheader("📊 Exporter la liste des utilisateurs")
-
-    df_users = pd.DataFrame(users)
-    buf = io.BytesIO()
-    df_users[["nom", "prenom", "login", "km", "is_admin"]].to_excel(buf, index=False)
-    buf.seek(0)
-
-    st.download_button(
-        "📊 Télécharger la liste des utilisateurs (Excel)",
-        buf,
-        "liste_utilisateurs.xlsx"
-    )
 # ================= ENCODAGE =================
 save_clicked = False
 send_clicked = False
@@ -920,218 +847,231 @@ if save_clicked:
 
 
 # ================= VALIDATION =================
+# ================= VALIDATION =================
 if menu == "Validation":
     st.header("Validation des indemnités")
+    # VALIDATION GLOBALE
+    # =============================
+    st.divider()
+    st.subheader("Validation globale")
 
-    # =============================
-    # Sélection utilisateur
-    # =============================
-    df_users = pd.DataFrame(
+# =============================
+# VALIDATION GLOBALE (ADMIN)
+# =============================
+if st.button("✅ Valider tous les utilisateurs", key="validate_all_users"):
+    res_users = (
         supabase
         .table("users")
-        .select("id, prenom, nom, km")
+        .select("id, km")
         .neq("login", "admin")
         .execute()
-        .data
     )
 
-    trajets_mois = supabase.table("trajets") \
-        .select("user_id") \
-        .like("jour", f"{ym}%") \
-        .execute() \
-        .data
-
-    users_ids = {t["user_id"] for t in trajets_mois}
-    df_users = df_users[df_users["id"].isin(users_ids)]
-
-    if df_users.empty:
-        st.info("Aucun encodage pour ce mois.")
+    if not res_users.data:
+        st.warning("Aucun utilisateur à valider.")
         st.stop()
 
-    choix = ["— Sélectionner un utilisateur —"]
-    choix += [f"{r.prenom} {r.nom}" for r in df_users.itertuples()]
-
-    selection = st.selectbox("Utilisateur", choix)
-
-    user_id = None
-    km_user = None
-
-    if selection != choix[0]:
-        row = df_users.iloc[choix.index(selection) - 1]
-        user_id = int(row.id)
-        km_user = float(row.km)
-
-    # =============================
-    # Validation individuelle
-    # =============================
-    if user_id is not None:
-
-        ancienne = (
-            supabase.table("validations")
-            .select("brut, plafonne, km_utilise, validated_at")
-            .eq("user_id", user_id)
-            .eq("mois", ym)
-            .maybe_single()
-            .execute()
-            .data
-        )
-
-        if ancienne:
-            ancien_brut = ancienne["brut"]
-            ancien_plafonne = ancienne["plafonne"]
-            km_utilise = ancienne["km_utilise"] or km_user
-            ancienne_date = ancienne["validated_at"]
-        else:
-            ancien_brut = ancien_plafonne = ancienne_date = None
-            km_utilise = km_user
-
-        # =============================
-        # Calculs financiers
-        # =============================
-        montants = montant_final_paye(user_id, ym, km_utilise)
-
-        brut_calcule = montants["brut"]
-        plafonne_calcule = montants["plafonne"]
-        regul = montants["regularisation"]
-        total_verse = montants["total_paye"]
-
-        # =============================
-        # VISUEL : détail des jours
-        # =============================
-        df_trajets = pd.DataFrame(
-            supabase.table("trajets")
-            .select("jour, transport")
-            .eq("user_id", user_id)
-            .like("jour", f"{ym}%")
-            .order("jour")
-            .execute()
-            .data
-        )
-
-        if df_trajets.empty:
-            st.warning("Aucun jour encodé pour ce mois.")
-        else:
-            df_trajets["Jour"] = pd.to_datetime(df_trajets["jour"]).dt.strftime("%d/%m/%Y")
-            df_trajets["KM utilisés"] = km_utilise
-            df_trajets["Taux"] = df_trajets["transport"].map(TAUX)
-            df_trajets["Indemnité"] = df_trajets["KM utilisés"] * df_trajets["Taux"]
-
-            st.subheader("Détail des jours encodés")
-            st.dataframe(df_trajets[["Jour", "transport", "KM utilisés", "Indemnité"]])
-
-        st.divider()
-
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Montant théorique", f"{brut_calcule:.2f} €")
-        col2.metric("Plafond mensuel", f"{PLAFOND_MENSUEL:.2f} €")
-        col3.metric("Régularisation", f"{regul:+.2f} €")
-        col4.metric("Montant final payé", f"{total_verse:.2f} €")
-
-        if ancienne:
-            delta = round(plafonne_calcule - ancien_plafonne, 2)
-            st.caption(
-                f"🕒 Validé le {ancienne_date} — "
-                f"Ancien montant : {ancien_plafonne:.2f} € ({delta:+.2f} €)"
-            )
-
-        st.divider()
-
-        colb1, colb2 = st.columns(2)
-
-        # --- Validation initiale ---
-        with colb1:
-            if st.button("✅ Valider", disabled=ancienne is not None):
-                supabase.table("validations").insert({
-                    "user_id": user_id,
-                    "mois": ym,
-                    "km_utilise": km_utilise,
-                    "brut": brut_calcule,
-                    "plafonne": plafonne_calcule
-                }).execute()
-
-                supabase.table("trajets") \
-                    .update({"validated": True}) \
-                    .eq("user_id", user_id) \
-                    .like("jour", f"{ym}%") \
-                    .execute()
-
-                st.success("Mois validé")
-                st.rerun()
-# --- Revalidation ---
-with colb2:
-    if st.button("🔁 Revalider", disabled=ancienne is None):
-
-        creer_regularisation_si_necessaire(
-            user_id,
-            ym,
-            ancien_brut,
-            ancien_plafonne,
-            brut_calcule,
-            plafonne_calcule
-        )
-
-        supabase.table("validations") \
-            .update({
-                "brut": brut_calcule,
-                "plafonne": plafonne_calcule,
-                "validated_at": date.today().isoformat()
-            }) \
-            .eq("user_id", user_id) \
-            .eq("mois", ym) \
-            .execute()
-
-        an, m = map(int, ym.split("-"))
-        mois_suivant = f"{an+1}-01" if m == 12 else f"{an}-{m+1:02d}"
-
-        st.success(f"Mois revalidé — correction reportée sur {mois_suivant}")
-        st.rerun()
-st.divider()
-st.subheader("Validation globale")
-
-if st.button("✅ Valider tous les utilisateurs", key=f"validation_all_{ym}"):
-
-    trajets = supabase.table("trajets") \
-        .select("user_id") \
-        .like("jour", f"{ym}%") \
-        .execute() \
-        .data
-
-    user_ids = {t["user_id"] for t in trajets}
-
-    users = supabase.table("users") \
-        .select("id, km") \
-        .in_("id", list(user_ids)) \
-        .neq("login", "admin") \
-        .execute() \
-        .data
-
-    for u in users:
-        uid_u = u["id"]
+    for u in res_users.data:
+        uid = u["id"]
         km_u = u["km"]
 
-        brut, plafonne = total_mois(uid_u, ym, km_u)
+        brut, plafonne = total_mois(uid, ym, km_u)
 
+        # Supprimer validation existante
         supabase.table("validations") \
             .delete() \
-            .eq("user_id", uid_u) \
+            .eq("user_id", uid) \
             .eq("mois", ym) \
             .execute()
 
+        # Créer validation
         supabase.table("validations").insert({
-            "user_id": uid_u,
+            "user_id": uid,
             "mois": ym,
             "km_utilise": km_u,
             "brut": brut,
             "plafonne": plafonne
         }).execute()
 
-    supabase.table("trajets") \
-        .update({"validated": True}) \
-        .like("jour", f"{ym}%") \
-        .execute()
+        # Verrouiller trajets
+        supabase.table("trajets") \
+            .update({"validated": 1}) \
+            .eq("user_id", uid) \
+            .like("jour", f"{ym}-%") \
+            .execute()
 
     st.success("Tous les utilisateurs ont été validés")
     st.rerun()
+
+    # Sélection utilisateur
+    # =============================
+    res_users = (
+        supabase
+        .table("users")
+        .select("id, prenom, nom, km")
+        .neq("login", "admin")
+        .execute()
+    )
+
+    if not res_users.data:
+        st.info("Aucun utilisateur disponible.")
+        st.stop()
+
+    labels = ["— Sélectionner un utilisateur —"]
+    user_map = {}
+
+    for u in res_users.data:
+        label = f"{u['prenom']} {u['nom']}"
+        labels.append(label)
+        user_map[label] = u
+
+    selection = st.selectbox("Utilisateur", labels)
+
+    if selection == labels[0]:
+        st.stop()
+
+    # =============================
+    # CONTEXTE UTILISATEUR
+    # =============================
+    user = user_map[selection]
+    user_id = user["id"]
+    km_user = float(user["km"])
+
+    # =============================
+    # Ancienne validation ?
+    # =============================
+    ancienne = None
+    ancien_brut = ancien_plafonne = ancien_km = ancienne_date = None
+
+    res_old = (
+        supabase
+        .table("validations")
+        .select("brut, plafonne, km_utilise, validated_at")
+        .eq("user_id", user_id)
+        .eq("mois", ym)
+        .execute()
+    )
+
+    if res_old.data:
+        ancienne = res_old.data[0]
+        ancien_brut = ancienne["brut"]
+        ancien_plafonne = ancienne["plafonne"]
+        ancien_km = ancienne["km_utilise"]
+        ancienne_date = ancienne["validated_at"]
+
+    km_utilise = ancien_km if ancien_km is not None else km_user
+
+    # =============================
+    # Calculs financiers
+    # =============================
+    montants = montant_final_paye(user_id, ym, km_utilise)
+
+    brut_calcule = montants["brut"]
+    plafonne_calcule = montants["plafonne"]
+    regul = montants["regularisation"]
+    total_verse = montants["total_paye"]
+
+    # =============================
+    # Détail des jours
+    # =============================
+    res_jours = (
+        supabase
+        .table("trajets")
+        .select("jour, transport")
+        .eq("user_id", user_id)
+        .like("jour", f"{ym}-%")
+        .order("jour")
+        .execute()
+    )
+
+    if res_jours.data:
+        df = pd.DataFrame(res_jours.data)
+        df["Jour"] = pd.to_datetime(df["jour"]).dt.strftime("%d/%m/%Y")
+        df["KM"] = km_utilise
+        df["Taux"] = df["transport"].map(TAUX)
+        df["Indemnité"] = df["KM"] * df["Taux"]
+
+        st.subheader("Détail des jours encodés")
+        st.dataframe(
+            df[["Jour", "transport", "KM", "Indemnité"]],
+            use_container_width=True
+        )
+    else:
+        st.warning("Aucun jour encodé pour ce mois.")
+
+    st.divider()
+
+    # =============================
+    # Synthèse
+    # =============================
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Montant brut", f"{brut_calcule:.2f} €")
+    c2.metric("Plafonné", f"{plafonne_calcule:.2f} €")
+    c3.metric("Régularisation", f"{regul:+.2f} €")
+    c4.metric("Total payé", f"{total_verse:.2f} €")
+
+    if ancienne:
+        delta = round(plafonne_calcule - ancien_plafonne, 2)
+        st.caption(
+            f"🕒 Validé le {ancienne_date} — "
+            f"Ancien montant : {ancien_plafonne:.2f} € ({delta:+.2f} €)"
+        )
+
+    st.divider()
+
+    # =============================
+    # Boutons validation
+    # =============================
+    colb1, colb2 = st.columns(2)
+
+    # ----- VALIDATION INITIALE -----
+    with colb1:
+        if st.button("✅ Valider", disabled=ancienne is not None):
+            supabase.table("validations").insert({
+                "user_id": user_id,
+                "mois": ym,
+                "km_utilise": km_utilise,
+                "brut": brut_calcule,
+                "plafonne": plafonne_calcule
+            }).execute()
+
+            supabase.table("trajets") \
+                .update({"validated": 1}) \
+                .eq("user_id", user_id) \
+                .like("jour", f"{ym}-%") \
+                .execute()
+
+            st.success("Mois validé")
+            st.rerun()
+
+    # ----- REVALIDATION -----
+    with colb2:
+        if st.button("🔁 Revalider", disabled=ancienne is None):
+
+            creer_regularisation_si_necessaire(
+                user_id,
+                ym,
+                ancien_brut,
+                ancien_plafonne,
+                brut_calcule,
+                plafonne_calcule
+            )
+
+            supabase.table("validations") \
+                .update({
+                    "brut": brut_calcule,
+                    "plafonne": plafonne_calcule,
+                    "validated_at": "now()"
+                }) \
+                .eq("user_id", user_id) \
+                .eq("mois", ym) \
+                .execute()
+
+            st.success("Mois revalidé avec régularisation")
+            st.rerun()
+
+    # =============================
+
 if menu == "Exports":
     st.header("Export mensuel des indemnités")
 
@@ -1195,8 +1135,11 @@ if menu == "Exports":
     st.download_button(
         "📥 Télécharger l’export mensuel",
         buffer,
-        nom_fichier
-    )
+        nom_fichier,
+        key=f"btn_export_indemnites_{ym}"
+)
+
+
 if menu == "Historique":
     st.header("Historique de mes encodages")
 
