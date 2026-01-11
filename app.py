@@ -188,6 +188,33 @@ def login_user(login, pwd):
         st.error(f"Erreur login Supabase : {e}")
         return None
 
+# ================= INIT ADMIN (SUPABASE) =================
+def init_admin():
+    res = (
+        supabase
+        .table("users")
+        .select("id")
+        .eq("login", "admin")
+        .execute()
+    )
+
+    if res.data:
+        return  # admin déjà présent → on ne touche plus
+
+    hpwd = bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode()
+
+    supabase.table("users").insert({
+        "nom": "Admin",
+        "prenom": "Root",
+        "login": "admin",
+        "password": hpwd,
+        "km": 0,
+        "is_admin": True,
+        "must_change_pwd": True
+    }).execute()
+
+# ⚠️ À appeler UNE SEULE FOIS
+init_admin()
 
 
 # ================= SESSION STATE INIT =================
@@ -680,7 +707,8 @@ if menu == "Encodage":
     st.header("Encodage des trajets")
 
     # ===== Sélection utilisateur (admin) =====
-    cible = uid
+    cible = uid  # par défaut : utilisateur connecté
+
     if is_admin:
         users = (
             supabase
@@ -692,13 +720,23 @@ if menu == "Encodage":
             .data
         )
 
-        u = st.selectbox(
+        if not users:
+            st.warning("Aucun utilisateur disponible.")
+            st.stop()
+
+        # 🔒 mapping sûr label -> id
+        user_labels = {
+            f"{u['prenom']} {u['nom']}": u["id"]
+            for u in users
+        }
+
+        selected_label = st.selectbox(
             "Utilisateur",
-            users,
-            format_func=lambda x: f"{x['prenom']} {x['nom']}",
+            list(user_labels.keys()),
             key="encodage_user_select"
         )
-        cible = u["id"]
+
+        cible = user_labels[selected_label]
 
     # ===== Transport global =====
     transport_global = st.selectbox(
@@ -728,7 +766,7 @@ if menu == "Encodage":
     # ===== Détection mois validé =====
     mois_valide = any(validated for _, _, _, validated, _ in jours)
 
-    # ===== Blocage TOTAL utilisateur si mois validé =====
+    # ===== Blocage utilisateur si mois validé =====
     if mois_valide and not is_admin:
         st.info("🔒 Ce mois est validé. Consultation uniquement.")
         st.session_state.edit_mode = False
@@ -803,15 +841,6 @@ if send_clicked:
     st.success("Mois envoyé pour validation")
     st.rerun()
 
-    supabase.table("trajets") \
-        .update({"sent_for_validation": True}) \
-        .eq("user_id", cible) \
-        .like("jour", f"{ym}%") \
-        .execute()
-
-    st.success("Mois envoyé pour validation")
-    st.rerun()
-  
 
 
 
