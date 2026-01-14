@@ -697,43 +697,47 @@ if menu == "Encodage":
     st.divider()
 
     # ==================================================
-# SÉLECTION UTILISATEUR (ADMIN)
-# ==================================================
-cible = uid
+    # UTILISATEUR CIBLE
+    # ==================================================
+    if is_admin:
+        res_users = (
+            supabase
+            .table("users")
+            .select("id, prenom, nom")
+            .neq("login", "admin")
+            .order("nom")
+            .execute()
+        )
 
-if is_admin:
-    res_users = (
-        supabase
-        .table("users")
-        .select("id, prenom, nom")
-        .neq("login", "admin")
-        .order("nom")
-        .execute()
-    )
+        users = res_users.data or []
 
-    if not res_users.data:
-        st.warning("Aucun utilisateur disponible.")
-        st.stop()
+        if not users:
+            st.warning(
+                "Aucun utilisateur disponible. "
+                "L’administrateur ne peut pas encoder pour lui-même."
+            )
+            st.stop()
 
-    labels = []
-    user_map = {}
+        labels = []
+        user_map = {}
 
-    for u in res_users.data:
-        label = f"{u['prenom']} {u['nom']}"
-        labels.append(label)
-        user_map[label] = u["id"]
+        for u in users:
+            label = f"{u['prenom']} {u['nom']}"
+            labels.append(label)
+            user_map[label] = u["id"]
 
-    selected_label = st.selectbox(
-        "Utilisateur",
-        labels,
-        key="encodage_user_select"
-    )
+        selected_label = st.selectbox(
+            "Utilisateur à encoder",
+            labels,
+            key="encodage_user_select"
+        )
 
-    # 🔒 SÉCURITÉ ANTI-KeyError
-    if selected_label not in user_map:
-        st.stop()
+        cible = user_map[selected_label]
 
-    cible = user_map[selected_label]
+    else:
+        # utilisateur normal → lui-même
+        cible = uid
+
 
     # ==================================================
     # TRANSPORT PAR DÉFAUT
@@ -770,54 +774,8 @@ if is_admin:
     # ==================================================
     jours_a_creer = []
 
-    current = periode_start
-    while current <= periode_end:
-        jour_iso = current.isoformat()
-        wd = current.weekday()
-        is_weekend = wd >= 5
+    jours = calendrier(cible, admin=is_admin)
 
-        existe = jour_iso in trajets
-        validated = trajets[jour_iso]["validated"] if existe else False
-        sent = trajets[jour_iso]["sent_for_validation"] if existe else False
-
-        locked = (
-            is_weekend
-            or sent
-            or (validated and not is_admin)
-        )
-
-        label = f"{JOURS_FR[wd]} {current.strftime('%d/%m')}"
-
-        col1, col2 = st.columns([1, 3])
-
-        with col1:
-            if existe:
-                st.checkbox(
-                    label,
-                    value=True,
-                    disabled=True,
-                    key=f"exist_{jour_iso}"
-                )
-            else:
-                val = st.checkbox(
-                    label,
-                    disabled=locked,
-                    key=f"new_{jour_iso}"
-                )
-                if val:
-                    jours_a_creer.append(jour_iso)
-
-        with col2:
-            if is_weekend:
-                st.caption("⛔ Week-end")
-            elif existe:
-                st.caption(trajets[jour_iso]["transport"])
-            else:
-                st.caption("")
-
-        current += timedelta(days=1)
-
-    st.divider()
 
     # ==================================================
     # ACTIONS
