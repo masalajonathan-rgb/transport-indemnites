@@ -697,35 +697,43 @@ if menu == "Encodage":
     st.divider()
 
     # ==================================================
-    # UTILISATEUR CIBLE
-    # ==================================================
-    cible = uid
+# SÉLECTION UTILISATEUR (ADMIN)
+# ==================================================
+cible = uid
 
-    if is_admin:
-        res_users = (
-            supabase
-            .table("users")
-            .select("id, prenom, nom")
-            .neq("login", "admin")
-            .order("nom")
-            .execute()
-        )
+if is_admin:
+    res_users = (
+        supabase
+        .table("users")
+        .select("id, prenom, nom")
+        .neq("login", "admin")
+        .order("nom")
+        .execute()
+    )
 
-        labels = []
-        user_map = {}
+    if not res_users.data:
+        st.warning("Aucun utilisateur disponible.")
+        st.stop()
 
-        for u in res_users.data:
-            label = f"{u['prenom']} {u['nom']}"
-            labels.append(label)
-            user_map[label] = u["id"]
+    labels = []
+    user_map = {}
 
-        selected_label = st.selectbox(
-            "Utilisateur",
-            labels,
-            key="encodage_user_select"
-        )
+    for u in res_users.data:
+        label = f"{u['prenom']} {u['nom']}"
+        labels.append(label)
+        user_map[label] = u["id"]
 
-        cible = user_map[selected_label]
+    selected_label = st.selectbox(
+        "Utilisateur",
+        labels,
+        key="encodage_user_select"
+    )
+
+    # 🔒 SÉCURITÉ ANTI-KeyError
+    if selected_label not in user_map:
+        st.stop()
+
+    cible = user_map[selected_label]
 
     # ==================================================
     # TRANSPORT PAR DÉFAUT
