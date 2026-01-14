@@ -733,11 +733,8 @@ if menu == "Encodage":
         )
 
         cible = user_map[selected_label]
-
     else:
-        # utilisateur normal → lui-même
         cible = uid
-
 
     # ==================================================
     # TRANSPORT PAR DÉFAUT
@@ -751,40 +748,37 @@ if menu == "Encodage":
     st.divider()
 
     # ==================================================
-    # TRAJETS EXISTANTS (SUR LA PÉRIODE MÉTIER)
-    # ==================================================
-    rows = (
-        supabase
-        .table("trajets")
-        .select("jour, transport, validated, sent_for_validation")
-        .eq("user_id", cible)
-        .gte("jour", periode_start.isoformat())
-        .lte("jour", periode_end.isoformat())
-        .execute()
-        .data
-    )
-
-    trajets = {
-        r["jour"]: r
-        for r in rows
-    }
-
-    # ==================================================
-    # AFFICHAGE JOUR PAR JOUR (PÉRIODE MÉTIER UNIQUEMENT)
-    # ==================================================
-    jours_a_creer = []
-
-    jours = calendrier(cible, admin=is_admin)
-
-
-    # ==================================================
-    # ACTIONS
+    # MODE ÉDITION
     # ==================================================
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("💾 Enregistrer", key="encodage_save"):
-            for jour_iso in jours_a_creer:
+        if st.button("✏️ Modifier l’encodage"):
+            st.session_state.edit_mode = True
+
+    with col2:
+        save_clicked = st.button("💾 Enregistrer")
+
+    st.divider()
+
+    # ==================================================
+    # CALENDRIER (GRILLE)
+    # ==================================================
+    jours = calendrier(cible, admin=is_admin)
+
+    # ==================================================
+    # ENREGISTREMENT
+    # ==================================================
+    if save_clicked:
+        for day, val, existe, validated, sent in jours:
+            jour_iso = day.isoformat()
+
+            # sécurité période
+            if not (periode_start <= day <= periode_end):
+                continue
+
+            # ➕ AJOUT
+            if val and not existe:
                 supabase.table("trajets").insert({
                     "user_id": cible,
                     "jour": jour_iso,
@@ -793,21 +787,43 @@ if menu == "Encodage":
                     "sent_for_validation": False
                 }).execute()
 
-            st.success("Encodage enregistré.")
+            # ✏️ MODIFICATION / SUPPRESSION
+            elif existe and st.session_state.edit_mode:
+                if not val:
+                    supabase.table("trajets") \
+                        .delete() \
+                        .eq("user_id", cible) \
+                        .eq("jour", jour_iso) \
+                        .execute()
+                else:
+                    supabase.table("trajets") \
+                        .update({
+                            "transport": transport_global,
+                            "validated": False
+                        }) \
+                        .eq("user_id", cible) \
+                        .eq("jour", jour_iso) \
+                        .execute()
+
+        st.session_state.edit_mode = False
+        st.success("Encodage enregistré.")
+        st.rerun()
+
+    # ==================================================
+    # ENVOI POUR VALIDATION (UTILISATEUR)
+    # ==================================================
+    if not is_admin and not st.session_state.edit_mode:
+        if st.button("📤 Envoyer pour validation"):
+            supabase.table("trajets") \
+                .update({"sent_for_validation": True}) \
+                .eq("user_id", cible) \
+                .gte("jour", periode_start.isoformat()) \
+                .lte("jour", periode_end.isoformat()) \
+                .execute()
+
+            st.success("Période envoyée pour validation.")
             st.rerun()
 
-    with col2:
-        if not is_admin:
-            if st.button("📤 Envoyer pour validation", key="encodage_send"):
-                supabase.table("trajets") \
-                    .update({"sent_for_validation": True}) \
-                    .eq("user_id", cible) \
-                    .gte("jour", periode_start.isoformat()) \
-                    .lte("jour", periode_end.isoformat()) \
-                    .execute()
-
-                st.success("Période envoyée pour validation.")
-                st.rerun()
 
 if menu == "Validation":
     st.header("Validation des indemnités")
