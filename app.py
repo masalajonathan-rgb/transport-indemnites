@@ -1469,3 +1469,52 @@ if menu == "Exports":
             .update({"exported": True}) \
             .eq("mois", mois_str) \
             .execute()
+
+
+if menu == "Historique":
+    st.header("Historique de mes encodages")
+
+    trajets = (
+        supabase
+        .table("trajets")
+        .select("jour, transport, validated")
+        .eq("user_id", uid)
+        .execute()
+        .data
+    )
+
+    if not trajets:
+        st.info("Aucun encodage trouvé.")
+        st.stop()
+
+    df = pd.DataFrame(trajets)
+    df["mois"] = df["jour"].str[:7]
+
+    pivot = df.pivot_table(
+        index="mois",
+        columns="transport",
+        values="jour",
+        aggfunc="count",
+        fill_value=0
+    ).reset_index()
+
+    for t in TRANSPORTS:
+        if t not in pivot.columns:
+            pivot[t] = 0
+
+    pivot["Total calculé (€)"] = (
+        pivot["Voiture"] * km * TAUX["Voiture"]
+    )
+
+    pivot["Total remboursé (€)"] = pivot["Total calculé (€)"].apply(
+        lambda x: min(x, PLAFOND_MENSUEL)
+    )
+
+    pivot["Statut"] = (
+        df.groupby("mois")["validated"]
+        .max()
+        .apply(lambda x: "✅ Validé" if x else "⏳ En attente")
+        .values
+    )
+
+    st.dataframe(pivot, use_container_width=True)
