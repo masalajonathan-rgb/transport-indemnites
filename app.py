@@ -142,7 +142,8 @@ def total_mois_periode(user_id, periode_start, periode_end, km):
 
     # ✅ calcul journalier correct
     df["taux"] = df["transport"].map(TAUX)
-    df["indemnite_jour"] = df["taux"] * float(km)
+    df["km_effectif"] = df["km_utilise"].fillna(km)
+    df["indemnite_jour"] = df["taux"] * df["km_effectif"]
 
     brut = df["indemnite_jour"].sum()
     plafonne = min(brut, PLAFOND_MENSUEL)
@@ -343,7 +344,8 @@ def total_mois_comptable(user_id, mois_comptable, km):
 
     # ✅ calcul journalier correct
     df["taux"] = df["transport"].map(TAUX)
-    df["indemnite_jour"] = df["taux"] * float(km)
+    df["km_effectif"] = df["km_utilise"].fillna(km)
+    df["indemnite_jour"] = df["taux"] * df["km_effectif"]
 
     brut = df["indemnite_jour"].sum()
     plafonne = min(brut, PLAFOND_MENSUEL)
@@ -688,17 +690,20 @@ def calendrier(user_id, admin=False):
         current += timedelta(days=1)
 
     # ===== alignement semaine (lundi → dimanche) =====
-    first_weekday = days[0].weekday()  # lundi = 0
+    first_weekday = days[0].weekday()
     for _ in range(first_weekday):
         days.insert(0, None)
 
     # ===== affichage par semaines =====
     for i in range(0, len(days), 7):
+
         cols = st.columns(7)
         week = days[i:i+7]
 
         for col, day in zip(cols, week):
+
             with col:
+
                 if day is None:
                     st.write("")
                     continue
@@ -713,19 +718,25 @@ def calendrier(user_id, admin=False):
                 locked = (
                     is_weekend
                     or ((sent or validated) and not admin)
-                )               
-                
+                )
 
                 label = f"{JOURS_FR[wd][:2]} {day.strftime('%d/%m')}"
 
-                # ===== week-end =====
+                # ==========================
+                # WEEK-END
+                # ==========================
                 if is_weekend:
+
                     st.checkbox(label, disabled=True)
                     st.caption("⛔ Week-end")
+
                     val = False
 
-                # ===== jour existant =====
+                # ==========================
+                # JOUR EXISTANT
+                # ==========================
                 elif existe:
+
                     icon = {
                         "Voiture": "🚗",
                         "Vélo": "🚲",
@@ -734,25 +745,41 @@ def calendrier(user_id, admin=False):
 
                     status = "✅" if validated else "⏳" if sent else ""
 
-                    if not st.session_state.edit_mode:
-                        st.checkbox(label, value=True, disabled=True)
-                        st.caption(f"{icon} {data[day]['transport']} {status}")
-                        val = True
-                    else:
+                    # ===== MODE ÉDITION =====
+                    if st.session_state.edit_mode:
+
                         selected = day.day in st.session_state.jours_selectionnes
-                        toggle = st.checkbox(label, value=selected, disabled=locked)
+
+                        toggle = st.checkbox(
+                            label,
+                            value=selected,
+                            disabled=locked
+                        )
 
                         if toggle:
                             st.session_state.jours_selectionnes.add(day.day)
                         else:
                             st.session_state.jours_selectionnes.discard(day.day)
 
-                        st.caption(f"{icon} {data[day]['transport']}")
+                        st.caption(f"{icon} {data[day]['transport']} {status}")
+
                         val = True
 
-                # ===== nouveau jour =====
+                    # ===== MODE NORMAL =====
+                    else:
+
+                        st.checkbox(label, value=True, disabled=True)
+                        st.caption(f"{icon} {data[day]['transport']} {status}")
+
+                        val = True
+
+                # ==========================
+                # NOUVEAU JOUR
+                # ==========================
                 else:
+
                     val = st.checkbox(label, disabled=is_weekend)
+
                     if val:
                         st.caption("➕ Nouveau")
 
@@ -761,12 +788,11 @@ def calendrier(user_id, admin=False):
 
     return jours
 
-
-
 save_clicked = False
 send_clicked = False
 
 if menu == "Encodage":
+
     st.header(
         f"Encodage des trajets — "
         f"{periode_start.strftime('%d/%m/%Y')} → {periode_end.strftime('%d/%m/%Y')}"
@@ -777,6 +803,7 @@ if menu == "Encodage":
     # UTILISATEUR CIBLE
     # ==================================================
     if is_admin:
+
         res_users = (
             supabase
             .table("users")
@@ -789,10 +816,7 @@ if menu == "Encodage":
         users = res_users.data or []
 
         if not users:
-            st.warning(
-                "Aucun utilisateur disponible. "
-                "L’administrateur ne peut pas encoder pour lui-même."
-            )
+            st.warning("Aucun utilisateur disponible.")
             st.stop()
 
         labels = []
@@ -805,26 +829,23 @@ if menu == "Encodage":
 
         selected_label = st.selectbox(
             "Utilisateur à encoder",
-            labels,
-            key="encodage_user_select"
+            labels
         )
 
         cible = user_map[selected_label]
+
     else:
+
         cible = uid
 
     # ==================================================
-    # TRANSPORT PAR DÉFAUT (POUR LES AJOUTS)
+    # TRANSPORT PAR DÉFAUT
     # ==================================================
     transport_global = st.selectbox(
         "Moyen de transport pour les nouveaux jours",
-        TRANSPORTS,
-        key="encodage_transport"
+        TRANSPORTS
     )
 
-    # ==================================================
-    # OPTION EXPLICITE DE MODIFICATION
-    # ==================================================
     changer_transport = st.checkbox(
         "Changer le transport des jours existants sélectionnés",
         value=False
@@ -835,7 +856,7 @@ if menu == "Encodage":
     # ==================================================
     # MODE ÉDITION
     # ==================================================
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button("✏️ Modifier l’encodage"):
@@ -844,7 +865,14 @@ if menu == "Encodage":
     with col2:
         save_clicked = st.button("💾 Enregistrer")
 
-    st.divider()
+    with col3:
+        delete_selected = st.button("🗑 Supprimer sélection")
+
+    if st.session_state.edit_mode:
+        st.info(
+            "Mode modification actif : sélectionnez les jours existants "
+            "puis cliquez sur Enregistrer ou Supprimer."
+        )
 
     # ==================================================
     # CALENDRIER
@@ -852,47 +880,73 @@ if menu == "Encodage":
     jours = calendrier(cible, admin=is_admin)
 
     # ==================================================
+    # SUPPRESSION
+    # ==================================================
+    if delete_selected and st.session_state.edit_mode:
+
+        jours_supprimes = 0
+
+        for day in list(st.session_state.jours_selectionnes):
+
+            jour_date = date(annee, mois_num, day)
+
+            if not (periode_start <= jour_date <= periode_end):
+                continue
+
+            supabase.table("trajets") \
+                .delete() \
+                .eq("user_id", cible) \
+                .eq("jour", jour_date.isoformat()) \
+                .execute()
+
+            jours_supprimes += 1
+
+        st.session_state.jours_selectionnes.clear()
+
+        st.success(f"{jours_supprimes} jour(s) supprimé(s).")
+        st.rerun()
+
+    # ==================================================
     # ENREGISTREMENT
     # ==================================================
     if save_clicked:
+
         for day, val, existe, validated, sent in jours:
+
             jour_iso = day.isoformat()
 
-            # sécurité période
             if not (periode_start <= day <= periode_end):
                 continue
 
-            # ============================
-            # ➕ AJOUT D’UN NOUVEAU JOUR
-            # ============================
+            # AJOUT
             if val and not existe:
+
                 supabase.table("trajets").insert({
                     "user_id": cible,
                     "jour": jour_iso,
                     "transport": transport_global,
+                    "km_utilise": km,
                     "validated": False,
                     "sent_for_validation": False
                 }).execute()
 
-            # ============================
-            # 🗑️ SUPPRESSION
-            # ============================
+            # SUPPRESSION
             elif existe and st.session_state.edit_mode and not val:
+
                 supabase.table("trajets") \
                     .delete() \
                     .eq("user_id", cible) \
                     .eq("jour", jour_iso) \
                     .execute()
 
-            # ============================
-            # ✏️ MODIFICATION EXPLICITE
-            # ============================
+            # MODIFICATION TRANSPORT
             elif (
                 existe
                 and st.session_state.edit_mode
                 and val
                 and changer_transport
             ):
+
                 supabase.table("trajets") \
                     .update({
                         "transport": transport_global,
@@ -902,19 +956,17 @@ if menu == "Encodage":
                     .eq("jour", jour_iso) \
                     .execute()
 
-            # ============================
-            # 🚫 SINON → ON NE TOUCHE À RIEN
-            # ============================
-
         st.session_state.edit_mode = False
         st.success("Encodage enregistré.")
         st.rerun()
 
     # ==================================================
-    # ENVOI POUR VALIDATION (UTILISATEUR)
+    # ENVOI POUR VALIDATION
     # ==================================================
     if not is_admin and not st.session_state.edit_mode:
+
         if st.button("📤 Envoyer pour validation"):
+
             supabase.table("trajets") \
                 .update({"sent_for_validation": True}) \
                 .eq("user_id", cible) \
@@ -924,8 +976,6 @@ if menu == "Encodage":
 
             st.success("Période envoyée pour validation.")
             st.rerun()
-
-
 
 if menu == "Utilisateurs":
 
