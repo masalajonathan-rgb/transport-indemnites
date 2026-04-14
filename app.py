@@ -620,7 +620,7 @@ annee = mois_num = None
 periode_start = periode_end = None
 mois_comptable = None
 
-if menu in ["Encodage", "Validation", "Exports", "Historique"]:
+if menu in ["Encodage", "Validation", "Exports"]:
 
     today = date.today()
 
@@ -1034,17 +1034,21 @@ if menu == "Utilisateurs":
 
     st.divider()
 
-    # ==================================================
-    # MODIFICATION / SUPPRESSION UTILISATEUR
-    # ==================================================
+# ==================================================
+# MODIFICATION / SUPPRESSION UTILISATEUR
+# ==================================================
+if is_admin:
+
     st.subheader("✏️ Modifier ou supprimer un utilisateur")
+
+    users = locals().get("users", [])
 
     if not users:
         st.info("Aucun utilisateur disponible.")
         st.stop()
 
     user_labels = {
-        f"{u['prenom']} {u['nom']} ({u['login']})": u
+        f"{u.get('prenom','')} {u.get('nom','')} ({u.get('login','?')})": u
         for u in users
     }
 
@@ -1057,32 +1061,66 @@ if menu == "Utilisateurs":
     user = user_labels[selected_user_label]
 
     with st.form("form_edit_user"):
-        nom_e = st.text_input("Nom", value=user["nom"])
-        prenom_e = st.text_input("Prénom", value=user["prenom"])
-        login_e = st.text_input("Login", value=user["login"])
+
+        nom_e = st.text_input("Nom", value=user.get("nom", ""))
+        prenom_e = st.text_input("Prénom", value=user.get("prenom", ""))
+        login_e = st.text_input("Login", value=user.get("login", ""))
+
         km_e = st.number_input(
             "Kilomètres domicile-travail",
             min_value=0.0,
-            value=float(user["km"])
+            value=float(user.get("km", 0))
         )
+
         is_admin_e = st.checkbox(
             "Administrateur",
-            value=bool(user["is_admin"])
+            value=bool(user.get("is_admin", False))
         )
+
+        st.divider()
+
+        st.markdown("### 🔐 Gestion du mot de passe")
+
+        new_pwd = st.text_input(
+            "Nouveau mot de passe",
+            type="password"
+        )
+
+        force_change = st.checkbox(
+            "Forcer le changement au prochain login",
+            value=True
+        )
+
+        reset_pwd = st.checkbox("🔁 Réinitialiser à '1234'")
+
+        st.divider()
 
         col1, col2 = st.columns(2)
         save = col1.form_submit_button("💾 Enregistrer")
         delete = col2.form_submit_button("🗑️ Supprimer")
 
         if save:
+
+            update_data = {
+                "nom": nom_e.strip(),
+                "prenom": prenom_e.strip(),
+                "login": login_e.lower().strip(),
+                "km": float(km_e),
+                "is_admin": bool(is_admin_e)
+            }
+
+            if reset_pwd:
+                hpwd = bcrypt.hashpw("1234".encode(), bcrypt.gensalt()).decode()
+                update_data["password"] = hpwd
+                update_data["must_change_pwd"] = True
+
+            elif new_pwd:
+                hpwd = bcrypt.hashpw(new_pwd.encode(), bcrypt.gensalt()).decode()
+                update_data["password"] = hpwd
+                update_data["must_change_pwd"] = force_change
+
             supabase.table("users") \
-                .update({
-                    "nom": nom_e.strip(),
-                    "prenom": prenom_e.strip(),
-                    "login": login_e.lower().strip(),
-                    "km": float(km_e),
-                    "is_admin": bool(is_admin_e)
-                }) \
+                .update(update_data) \
                 .eq("id", user["id"]) \
                 .execute()
 
@@ -1090,6 +1128,11 @@ if menu == "Utilisateurs":
             st.rerun()
 
         if delete:
+
+            if user["id"] == uid:
+                st.error("Impossible de supprimer votre propre compte.")
+                st.stop()
+
             supabase.table("users") \
                 .delete() \
                 .eq("id", user["id"]) \
@@ -1097,14 +1140,14 @@ if menu == "Utilisateurs":
 
             st.warning("Utilisateur supprimé.")
             st.rerun()
+# ==================================================
+# IMPORT UTILISATEURS (EXCEL)
+# ==================================================
+if is_admin:
 
-    st.divider()
-
-    # ==================================================
-    # IMPORT UTILISATEURS (EXCEL)
-    # ==================================================
     st.subheader("📥 Import utilisateurs (Excel)")
 
+    # ===== MODELE =====
     modele = pd.DataFrame(
         columns=["nom", "prenom", "login", "km", "password", "is_admin"]
     )
@@ -1113,6 +1156,7 @@ if menu == "Utilisateurs":
     modele.to_excel(buf_tpl, index=False)
     buf_tpl.seek(0)
 
+    # ===== DOWNLOAD MODELE (hors form) =====
     st.download_button(
         "📄 Télécharger le modèle Excel",
         buf_tpl,
@@ -1121,7 +1165,11 @@ if menu == "Utilisateurs":
         key="download_users_template"
     )
 
+    st.divider()
+
+    # ===== FORMULAIRE =====
     with st.form("form_import_users"):
+
         file = st.file_uploader(
             "Fichier Excel",
             type="xlsx"
@@ -1166,6 +1214,7 @@ if menu == "Utilisateurs":
                             }).execute()
 
                             ajoutes += 1
+
                         except Exception:
                             erreurs += 1
 
@@ -1173,15 +1222,18 @@ if menu == "Utilisateurs":
                         f"Import terminé : {ajoutes} ajouté(s), "
                         f"{erreurs} erreur(s)."
                     )
+
                     st.rerun()
+# ==================================================
+# EXPORT UTILISATEURS
+# ==================================================
+if is_admin:
 
-    st.divider()
-
-    # ==================================================
-    # EXPORT UTILISATEURS
-    # ==================================================
     st.subheader("📊 Exporter les utilisateurs")
 
+    # ============================
+    # RÉCUPÉRATION DONNÉES
+    # ============================
     res_export = (
         supabase
         .table("users")
@@ -1190,23 +1242,50 @@ if menu == "Utilisateurs":
         .execute()
     )
 
-    if res_export.data:
-        df_export = pd.DataFrame(res_export.data)
+    users_data = res_export.data or []
 
-        buf_export = io.BytesIO()
-        df_export.to_excel(buf_export, index=False)
-        buf_export.seek(0)
+    if not users_data:
+        st.info("Aucun utilisateur à exporter.")
+        st.stop()
 
-        st.download_button(
-            "📥 Télécharger la liste des utilisateurs",
-            buf_export,
-            file_name="liste_utilisateurs.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="export_users"
-        )
-if menu == "Validation":
-    st.header("Validation des indemnités")
-    st.divider()
+    # ============================
+    # DATAFRAME
+    # ============================
+    df_export = pd.DataFrame(users_data)
+
+    df_export = df_export.rename(columns={
+        "nom": "Nom",
+        "prenom": "Prénom",
+        "login": "Login",
+        "km": "KM",
+        "is_admin": "Admin"
+    })
+
+    # ============================
+    # APERÇU
+    # ============================
+    st.dataframe(df_export, use_container_width=True)
+
+    # ============================
+    # EXPORT EXCEL
+    # ============================
+    buffer = io.BytesIO()
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_export.to_excel(writer, index=False, sheet_name="Utilisateurs")
+
+    buffer.seek(0)
+
+    # ============================
+    # DOWNLOAD
+    # ============================
+    st.download_button(
+        "📥 Télécharger la liste des utilisateurs",
+        buffer,
+        file_name="liste_utilisateurs.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="export_users"
+    )
 
     # ==================================================
     # VALIDATION GLOBALE (ADMIN)
@@ -1527,7 +1606,7 @@ if menu == "Historique":
     trajets = (
         supabase
         .table("trajets")
-        .select("jour, transport, validated")
+        .select("jour, transport")
         .eq("user_id", uid)
         .execute()
         .data
@@ -1552,19 +1631,57 @@ if menu == "Historique":
         if t not in pivot.columns:
             pivot[t] = 0
 
-    pivot["Total calculé (€)"] = (
-        pivot["Voiture"] * km * TAUX["Voiture"]
+    # ============================
+    # RÉCUP VALIDATIONS
+    # ============================
+    validations = (
+        supabase
+        .table("validations")
+        .select("mois, plafonne")
+        .eq("user_id", uid)
+        .execute()
+        .data
     )
 
-    pivot["Total remboursé (€)"] = pivot["Total calculé (€)"].apply(
-        lambda x: min(x, PLAFOND_MENSUEL)
+    val_map = {v["mois"]: float(v["plafonne"]) for v in validations}
+
+    # ============================
+    # RÉCUP REGULARISATIONS
+    # ============================
+    regs = (
+        supabase
+        .table("regularisations")
+        .select("mois_cible, montant")
+        .eq("user_id", uid)
+        .execute()
+        .data
     )
 
-    pivot["Statut"] = (
-        df.groupby("mois")["validated"]
-        .max()
-        .apply(lambda x: "✅ Validé" if x else "⏳ En attente")
-        .values
+    reg_map = {}
+    for r in regs:
+        reg_map.setdefault(r["mois_cible"], 0.0)
+        reg_map[r["mois_cible"]] += float(r["montant"])
+
+    # ============================
+    # MONTANTS
+    # ============================
+    pivot["Payé pour ce mois (€)"] = pivot["mois"].map(val_map).fillna(0)
+
+    pivot["Régularisation reçue (€)"] = pivot["mois"].map(reg_map).fillna(0)
+
+    pivot["Total reçu (€)"] = (
+        pivot["Payé pour ce mois (€)"] +
+        pivot["Régularisation reçue (€)"]
     )
 
+    # ============================
+    # STATUT
+    # ============================
+    pivot["Statut"] = pivot["mois"].apply(
+        lambda m: "✅ Validé" if m in val_map else "⏳ En attente"
+    )
+
+    # ============================
+    # AFFICHAGE
+    # ============================
     st.dataframe(pivot, use_container_width=True)
