@@ -977,13 +977,18 @@ if menu == "Encodage":
             st.success("Période envoyée pour validation.")
             st.rerun()
 
+
 if menu == "Utilisateurs":
+
+    if not is_admin:
+        st.error("Accès refusé")
+        st.stop()
 
     st.header("Gestion des utilisateurs")
     st.divider()
 
     # ==================================================
-    # RÉCUPÉRATION DES UTILISATEURS
+    # RÉCUPÉRATION USERS
     # ==================================================
     res_users = (
         supabase
@@ -1005,10 +1010,10 @@ if menu == "Utilisateurs":
         prenom_u = st.text_input("Prénom")
         login_u = st.text_input("Login")
         km_u = st.number_input("Kilomètres domicile-travail", min_value=0.0)
-        pwd_u = st.text_input("Mot de passe initial", type="password")
+        pwd_u = st.text_input("Mot de passe", type="password")
         is_admin_u = st.checkbox("Administrateur")
 
-        submit_create = st.form_submit_button("Créer l'utilisateur")
+        submit_create = st.form_submit_button("Créer")
 
         if submit_create:
             if not login_u or not pwd_u:
@@ -1029,79 +1034,61 @@ if menu == "Utilisateurs":
                     "must_change_pwd": True
                 }).execute()
 
-                st.success("Utilisateur créé.")
+                st.success("Utilisateur créé")
                 st.rerun()
 
     st.divider()
 
-# ==================================================
-# MODIFICATION / SUPPRESSION UTILISATEUR
-# ==================================================
-if is_admin:
-
-    st.subheader("✏️ Modifier ou supprimer un utilisateur")
-
-    users = locals().get("users", [])
+    # ==================================================
+    # MODIFICATION / SUPPRESSION
+    # ==================================================
+    st.subheader("✏️ Modifier / supprimer")
 
     if not users:
-        st.info("Aucun utilisateur disponible.")
+        st.info("Aucun utilisateur")
         st.stop()
 
     user_labels = {
-        f"{u.get('prenom','')} {u.get('nom','')} ({u.get('login','?')})": u
+        f"{u['prenom']} {u['nom']} ({u['login']})": u
         for u in users
     }
 
-    selected_user_label = st.selectbox(
+    selected_label = st.selectbox(
         "Utilisateur",
-        list(user_labels.keys()),
-        key="select_user_admin_unique"
+        list(user_labels.keys())
     )
 
-    user = user_labels[selected_user_label]
+    user = user_labels[selected_label]
 
     with st.form("form_edit_user"):
 
-        nom_e = st.text_input("Nom", value=user.get("nom", ""))
-        prenom_e = st.text_input("Prénom", value=user.get("prenom", ""))
-        login_e = st.text_input("Login", value=user.get("login", ""))
+        nom_e = st.text_input("Nom", value=user["nom"])
+        prenom_e = st.text_input("Prénom", value=user["prenom"])
+        login_e = st.text_input("Login", value=user["login"])
 
         km_e = st.number_input(
-            "Kilomètres domicile-travail",
+            "KM",
             min_value=0.0,
-            value=float(user.get("km", 0))
+            value=float(user["km"])
         )
 
         is_admin_e = st.checkbox(
             "Administrateur",
-            value=bool(user.get("is_admin", False))
+            value=user["is_admin"]
         )
 
-        st.divider()
+        st.markdown("### 🔐 Mot de passe")
 
-        st.markdown("### 🔐 Gestion du mot de passe")
-
-        new_pwd = st.text_input(
-            "Nouveau mot de passe",
-            type="password"
-        )
-
-        force_change = st.checkbox(
-            "Forcer le changement au prochain login",
-            value=True
-        )
-
-        reset_pwd = st.checkbox("🔁 Réinitialiser à '1234'")
-
-        st.divider()
+        new_pwd = st.text_input("Nouveau mot de passe", type="password")
+        reset_pwd = st.checkbox("Réinitialiser à '1234'")
 
         col1, col2 = st.columns(2)
         save = col1.form_submit_button("💾 Enregistrer")
-        delete = col2.form_submit_button("🗑️ Supprimer")
+        delete = col2.form_submit_button("🗑 Supprimer")
 
         if save:
 
-            update_data = {
+            data = {
                 "nom": nom_e.strip(),
                 "prenom": prenom_e.strip(),
                 "login": login_e.lower().strip(),
@@ -1111,20 +1098,20 @@ if is_admin:
 
             if reset_pwd:
                 hpwd = bcrypt.hashpw("1234".encode(), bcrypt.gensalt()).decode()
-                update_data["password"] = hpwd
-                update_data["must_change_pwd"] = True
+                data["password"] = hpwd
+                data["must_change_pwd"] = True
 
             elif new_pwd:
                 hpwd = bcrypt.hashpw(new_pwd.encode(), bcrypt.gensalt()).decode()
-                update_data["password"] = hpwd
-                update_data["must_change_pwd"] = force_change
+                data["password"] = hpwd
+                data["must_change_pwd"] = True
 
             supabase.table("users") \
-                .update(update_data) \
+                .update(data) \
                 .eq("id", user["id"]) \
                 .execute()
 
-            st.success("Utilisateur modifié.")
+            st.success("Utilisateur modifié")
             st.rerun()
 
         if delete:
@@ -1138,16 +1125,16 @@ if is_admin:
                 .eq("id", user["id"]) \
                 .execute()
 
-            st.warning("Utilisateur supprimé.")
+            st.warning("Utilisateur supprimé")
             st.rerun()
-# ==================================================
-# IMPORT UTILISATEURS (EXCEL)
-# ==================================================
-if is_admin:
 
-    st.subheader("📥 Import utilisateurs (Excel)")
+    st.divider()
 
-    # ===== MODELE =====
+    # ==================================================
+    # IMPORT UTILISATEURS
+    # ==================================================
+    st.subheader("📥 Import Excel")
+
     modele = pd.DataFrame(
         columns=["nom", "prenom", "login", "km", "password", "is_admin"]
     )
@@ -1156,30 +1143,21 @@ if is_admin:
     modele.to_excel(buf_tpl, index=False)
     buf_tpl.seek(0)
 
-    # ===== DOWNLOAD MODELE (hors form) =====
     st.download_button(
-        "📄 Télécharger le modèle Excel",
+        "📄 Télécharger modèle",
         buf_tpl,
-        file_name="modele_utilisateurs.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_users_template"
+        file_name="modele_utilisateurs.xlsx"
     )
 
-    st.divider()
-
-    # ===== FORMULAIRE =====
     with st.form("form_import_users"):
 
-        file = st.file_uploader(
-            "Fichier Excel",
-            type="xlsx"
-        )
+        file = st.file_uploader("Fichier Excel", type="xlsx")
 
         submit_import = st.form_submit_button("Importer")
 
         if submit_import:
             if not file:
-                st.warning("Veuillez sélectionner un fichier Excel.")
+                st.warning("Choisissez un fichier")
             else:
                 df = pd.read_excel(file)
 
@@ -1189,12 +1167,9 @@ if is_admin:
                 }
 
                 if not colonnes.issubset(df.columns):
-                    st.error(
-                        "Colonnes requises : "
-                        + ", ".join(colonnes)
-                    )
+                    st.error("Colonnes invalides")
                 else:
-                    ajoutes, erreurs = 0, 0
+                    ok, ko = 0, 0
 
                     for _, r in df.iterrows():
                         try:
@@ -1213,108 +1188,82 @@ if is_admin:
                                 "must_change_pwd": True
                             }).execute()
 
-                            ajoutes += 1
+                            ok += 1
+                        except:
+                            ko += 1
 
-                        except Exception:
-                            erreurs += 1
-
-                    st.success(
-                        f"Import terminé : {ajoutes} ajouté(s), "
-                        f"{erreurs} erreur(s)."
-                    )
-
+                    st.success(f"{ok} ajoutés / {ko} erreurs")
                     st.rerun()
-# ==================================================
-# EXPORT UTILISATEURS
-# ==================================================
-if is_admin:
 
-    st.subheader("📊 Exporter les utilisateurs")
+    st.divider()
 
-    # ============================
-    # RÉCUPÉRATION DONNÉES
-    # ============================
-    res_export = (
-        supabase
-        .table("users")
-        .select("nom, prenom, login, km, is_admin")
-        .order("nom")
-        .execute()
-    )
+    # ==================================================
+    # EXPORT UTILISATEURS
+    # ==================================================
+    st.subheader("📊 Export")
 
-    users_data = res_export.data or []
+    if users:
 
-    if not users_data:
-        st.info("Aucun utilisateur à exporter.")
+        df_export = pd.DataFrame(users).rename(columns={
+            "nom": "Nom",
+            "prenom": "Prénom",
+            "login": "Login",
+            "km": "KM",
+            "is_admin": "Admin"
+        })
+
+        st.dataframe(df_export, width="stretch")
+
+        buffer = io.BytesIO()
+
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df_export.to_excel(writer, index=False)
+
+        buffer.seek(0)
+
+        st.download_button(
+            "📥 Télécharger",
+            buffer,
+            file_name="utilisateurs.xlsx"
+        )
+
+if menu == "Validation":
+
+    if not is_admin:
+        st.error("Accès réservé aux administrateurs.")
         st.stop()
 
-    # ============================
-    # DATAFRAME
-    # ============================
-    df_export = pd.DataFrame(users_data)
-
-    df_export = df_export.rename(columns={
-        "nom": "Nom",
-        "prenom": "Prénom",
-        "login": "Login",
-        "km": "KM",
-        "is_admin": "Admin"
-    })
-
-    # ============================
-    # APERÇU
-    # ============================
-    st.dataframe(df_export, use_container_width=True)
-
-    # ============================
-    # EXPORT EXCEL
-    # ============================
-    buffer = io.BytesIO()
-
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_export.to_excel(writer, index=False, sheet_name="Utilisateurs")
-
-    buffer.seek(0)
-
-    # ============================
-    # DOWNLOAD
-    # ============================
-    st.download_button(
-        "📥 Télécharger la liste des utilisateurs",
-        buffer,
-        file_name="liste_utilisateurs.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="export_users"
-    )
+    st.header("Validation des indemnités")
+    st.divider()
 
     # ==================================================
-    # VALIDATION GLOBALE (ADMIN)
+    # VALIDATION GLOBALE
     # ==================================================
-    if is_admin:
-        st.subheader("Validation globale")
+    st.subheader("Validation globale")
 
-        if st.button("✅ Valider tous les utilisateurs", key="btn_validate_all"):
-            res_users = (
-                supabase
-                .table("users")
-                .select("id, km")
-                .neq("login", "admin")
-                .execute()
-            )
+    if st.button("✅ Valider tous les utilisateurs"):
 
-            if not res_users.data:
-                st.warning("Aucun utilisateur à valider.")
-            else:
-                for u in res_users.data:
-                    valider_mois(
-                        user_id=u["id"],
-                        annee=annee,
-                        mois=mois_num,
-                        km=u["km"]
-                    )
+        res_users = (
+            supabase
+            .table("users")
+            .select("id, km")
+            .neq("login", "admin")
+            .execute()
+        )
 
-                st.success("Tous les utilisateurs ont été validés.")
-                st.rerun()
+        if not res_users.data:
+            st.warning("Aucun utilisateur à valider.")
+        else:
+            for u in res_users.data:
+                valider_mois(
+                    user_id=u["id"],
+                    annee=annee,
+                    mois=mois_num,
+                    km=u["km"]
+                )
+
+            st.success("Tous les utilisateurs ont été validés.")
+            st.rerun()
 
     st.divider()
 
@@ -1361,7 +1310,7 @@ if is_admin:
     km_user = float(user["km"])
 
     # ==================================================
-    # DÉTAIL DES JOURS DU MOIS COURANT (01 → 20)
+    # DÉTAIL DES JOURS (01 → 20)
     # ==================================================
     start = date(annee, mois_num, 1)
     end = date(annee, mois_num, 20)
@@ -1379,15 +1328,16 @@ if is_admin:
 
     if res_jours.data:
         df = pd.DataFrame(res_jours.data)
+
         df["Jour"] = pd.to_datetime(df["jour"]).dt.strftime("%d/%m/%Y")
         df["KM"] = km_user
         df["Taux"] = df["transport"].map(TAUX)
         df["Indemnité"] = df["KM"] * df["Taux"]
 
-        st.subheader("Détail des jours (01 → 20)")
+        st.subheader("📅 Détail des jours (01 → 20)")
         st.dataframe(
             df[["Jour", "transport", "KM", "Indemnité"]],
-            use_container_width=True
+            width="stretch"
         )
     else:
         st.warning("Aucun jour encodé pour ce mois.")
@@ -1413,23 +1363,22 @@ if is_admin:
     total_simule = round(plafonne + regul, 2)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Montant brut (mois)", f"{brut:.2f} €")
-    c2.metric("Plafonné (mois)", f"{plafonne:.2f} €")
-    c3.metric(
-        "Régularisation mois précédent",
-        f"{regul:+.2f} €"
-    )
+
+    c1.metric("Montant brut", f"{brut:.2f} €")
+    c2.metric("Plafonné", f"{plafonne:.2f} €")
+    c3.metric("Régularisation", f"{regul:+.2f} €")
     c4.metric("Total payé", f"{total_simule:.2f} €")
 
     st.divider()
 
     # ==================================================
-    # ACTIONS
+    # ACTION VALIDATION
     # ==================================================
     col1, col2 = st.columns(2)
 
     with col1:
         if st.button("✅ Valider le mois", key="btn_validate_single"):
+
             resultat = valider_mois(
                 user_id=user_id,
                 annee=annee,
@@ -1438,10 +1387,10 @@ if is_admin:
             )
 
             st.success(
-                f"Mois validé — "
-                f"Total payé : {resultat['total_paye']:.2f} € "
+                f"Mois validé — Total payé : {resultat['total_paye']:.2f} € "
                 f"(dont régularisation {resultat['regularisation']:+.2f} €)"
             )
+
             st.rerun()
 
     with col2:
@@ -1449,14 +1398,22 @@ if is_admin:
             "ℹ️ Le mois courant complète automatiquement le mois précédent "
             "si le plafond n’était pas atteint."
         )
+
+
 if menu == "Exports":
-    st.header("Export mensuel des indemnités")
+
+    if not is_admin:
+        st.error("Accès réservé aux administrateurs.")
+        st.stop()
+
+    st.header("📊 Export mensuel des indemnités")
+    st.divider()
 
     mois_str = f"{annee}-{mois_num:02d}"
 
-    # ============================
+    # ==================================================
     # VALIDATIONS DU MOIS
-    # ============================
+    # ==================================================
     validations = (
         supabase
         .table("validations")
@@ -1473,18 +1430,32 @@ if menu == "Exports":
         st.info("Aucune validation pour ce mois.")
         st.stop()
 
-    # ============================
-    # VERROU EXPORT UNIQUE
-    # ============================
+    # ==================================================
+    # VERROU SI DÉJÀ EXPORTÉ
+    # ==================================================
     if all(v.get("exported", False) for v in validations):
         st.warning("⚠️ L’export pour ce mois a déjà été généré.")
         st.stop()
 
     user_ids = [v["user_id"] for v in validations]
 
-    # ============================
+    # ==================================================
+    # UTILISATEURS
+    # ==================================================
+    users = (
+        supabase
+        .table("users")
+        .select("id, nom, prenom, km")
+        .in_("id", user_ids)
+        .execute()
+        .data
+    )
+
+    user_map = {u["id"]: u for u in users}
+
+    # ==================================================
     # RÉGULARISATIONS
-    # ============================
+    # ==================================================
     regs = (
         supabase
         .table("regularisations")
@@ -1499,23 +1470,9 @@ if menu == "Exports":
         reg_map.setdefault(r["user_id"], 0.0)
         reg_map[r["user_id"]] += float(r["montant"])
 
-    # ============================
-    # INFOS UTILISATEURS
-    # ============================
-    users = (
-        supabase
-        .table("users")
-        .select("id, nom, prenom, km")
-        .in_("id", user_ids)
-        .execute()
-        .data
-    )
-
-    user_map = {u["id"]: u for u in users}
-
-    # ============================
-    # COMPTAGE JOURS PAR TRANSPORT
-    # ============================
+    # ==================================================
+    # TRAJETS (STATS)
+    # ==================================================
     trajets = (
         supabase
         .table("trajets")
@@ -1544,19 +1501,19 @@ if menu == "Exports":
     else:
         counts = pd.DataFrame(columns=["user_id"])
 
-    # ============================
+    # ==================================================
     # CONSTRUCTION EXPORT
-    # ============================
+    # ==================================================
     lignes = []
 
     for v in validations:
-        uid = v["user_id"]
-        regul = reg_map.get(uid, 0.0)
+        uid_v = v["user_id"]
+        regul = reg_map.get(uid_v, 0.0)
 
         ligne = {
-            "Nom": user_map[uid]["nom"],
-            "Prénom": user_map[uid]["prenom"],
-            "KM": user_map[uid]["km"],
+            "Nom": user_map[uid_v]["nom"],
+            "Prénom": user_map[uid_v]["prenom"],
+            "KM": user_map[uid_v]["km"],
             "Indemnité brute (€)": round(v["brut"], 2),
             "Indemnité plafonnée (€)": round(v["plafonne"], 2),
             "Régularisation (€)": round(regul, 2),
@@ -1565,8 +1522,9 @@ if menu == "Exports":
             "Revalidé": "OUI" if v.get("revalidated") else "NON",
         }
 
-        if uid in counts["user_id"].values:
-            row = counts[counts["user_id"] == uid].iloc[0]
+        # Ajout stats transport
+        if uid_v in counts["user_id"].values:
+            row = counts[counts["user_id"] == uid_v].iloc[0]
             for t in TRANSPORTS:
                 ligne[f"Jours {t}"] = int(row.get(t, 0))
         else:
@@ -1577,13 +1535,17 @@ if menu == "Exports":
 
     df = pd.DataFrame(lignes)
 
+    # ==================================================
+    # AFFICHAGE
+    # ==================================================
     st.subheader("Aperçu des données exportées")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
-    # ============================
+    # ==================================================
     # EXPORT EXCEL
-    # ============================
+    # ==================================================
     buffer = io.BytesIO()
+
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Indemnités")
 
@@ -1592,17 +1554,24 @@ if menu == "Exports":
     if st.download_button(
         "📥 Télécharger l’export mensuel",
         buffer,
-        f"indemnites_{mois_str}.xlsx"
+        file_name=f"indemnites_{mois_str}.xlsx"
     ):
         supabase.table("validations") \
             .update({"exported": True}) \
             .eq("mois", mois_str) \
             .execute()
 
+        st.success("Export marqué comme effectué.")
+
 
 if menu == "Historique":
-    st.header("Historique de mes encodages")
 
+    st.header("📊 Historique de mes indemnités")
+    st.divider()
+
+    # ==================================================
+    # TRAJETS
+    # ==================================================
     trajets = (
         supabase
         .table("trajets")
@@ -1617,23 +1586,38 @@ if menu == "Historique":
         st.stop()
 
     df = pd.DataFrame(trajets)
+
+    # ============================
+    # MOIS
+    # ============================
     df["mois"] = df["jour"].str[:7]
 
-    pivot = df.pivot_table(
+    # ============================
+    # AGRÉGATION FIABLE
+    # ============================
+    agg = (
+        df
+        .groupby(["mois", "transport"])
+        .size()
+        .reset_index(name="nb_jours")
+    )
+
+    pivot = agg.pivot(
         index="mois",
         columns="transport",
-        values="jour",
-        aggfunc="count",
-        fill_value=0
-    ).reset_index()
+        values="nb_jours"
+    ).fillna(0)
 
+    pivot = pivot.reset_index()
+
+    # Assure toutes les colonnes
     for t in TRANSPORTS:
         if t not in pivot.columns:
             pivot[t] = 0
 
-    # ============================
-    # RÉCUP VALIDATIONS
-    # ============================
+    # ==================================================
+    # VALIDATIONS
+    # ==================================================
     validations = (
         supabase
         .table("validations")
@@ -1643,11 +1627,14 @@ if menu == "Historique":
         .data
     )
 
-    val_map = {v["mois"]: float(v["plafonne"]) for v in validations}
+    val_map = {
+        v["mois"]: float(v["plafonne"])
+        for v in validations
+    }
 
-    # ============================
-    # RÉCUP REGULARISATIONS
-    # ============================
+    # ==================================================
+    # RÉGULARISATIONS
+    # ==================================================
     regs = (
         supabase
         .table("regularisations")
@@ -1658,30 +1645,62 @@ if menu == "Historique":
     )
 
     reg_map = {}
+
     for r in regs:
         reg_map.setdefault(r["mois_cible"], 0.0)
         reg_map[r["mois_cible"]] += float(r["montant"])
 
-    # ============================
-    # MONTANTS
-    # ============================
-    pivot["Payé pour ce mois (€)"] = pivot["mois"].map(val_map).fillna(0)
+    # ==================================================
+    # CALCULS
+    # ==================================================
+    pivot["Payé (€)"] = pivot["mois"].map(val_map).fillna(0)
 
-    pivot["Régularisation reçue (€)"] = pivot["mois"].map(reg_map).fillna(0)
+    pivot["Régularisation (€)"] = pivot["mois"].map(reg_map).fillna(0)
 
     pivot["Total reçu (€)"] = (
-        pivot["Payé pour ce mois (€)"] +
-        pivot["Régularisation reçue (€)"]
+        pivot["Payé (€)"] +
+        pivot["Régularisation (€)"]
     )
 
-    # ============================
+    # ==================================================
     # STATUT
-    # ============================
+    # ==================================================
     pivot["Statut"] = pivot["mois"].apply(
         lambda m: "✅ Validé" if m in val_map else "⏳ En attente"
     )
 
-    # ============================
+    # ==================================================
+    # TRI
+    # ==================================================
+    pivot = pivot.sort_values(by="mois", ascending=False)
+
+    # ==================================================
+    # RENOMMAGE
+    # ==================================================
+    pivot = pivot.rename(columns={
+        "mois": "Mois",
+        "Voiture": "🚗 Voiture",
+        "Vélo": "🚲 Vélo",
+        "Transport": "🚌 Transport"
+    })
+
+    # ==================================================
+    # ORDRE COLONNES
+    # ==================================================
+    pivot = pivot[
+        [
+            "Mois",
+            "🚗 Voiture",
+            "🚲 Vélo",
+            "🚌 Transport",
+            "Payé (€)",
+            "Régularisation (€)",
+            "Total reçu (€)",
+            "Statut"
+        ]
+    ]
+
+    # ==================================================
     # AFFICHAGE
-    # ============================
-    st.dataframe(pivot, use_container_width=True)
+    # ==================================================
+    st.dataframe(pivot, width="stretch")
