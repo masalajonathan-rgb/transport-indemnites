@@ -818,6 +818,9 @@ def calendrier(user_id, admin=False):
 save_clicked = False
 send_clicked = False
 
+
+
+
 if menu == "Encodage":
 
     st.header(
@@ -825,6 +828,15 @@ if menu == "Encodage":
         f"{periode_start.strftime('%d/%m/%Y')} → {periode_end.strftime('%d/%m/%Y')}"
     )
     st.divider()
+
+    # ==================================================
+    # INIT STATE (sécurisé)
+    # ==================================================
+    if "edit_mode" not in st.session_state:
+        st.session_state.edit_mode = False
+
+    if "jours_selectionnes" not in st.session_state:
+        st.session_state.jours_selectionnes = set()
 
     # ==================================================
     # UTILISATEUR CIBLE
@@ -854,15 +866,10 @@ if menu == "Encodage":
             labels.append(label)
             user_map[label] = u["id"]
 
-        selected_label = st.selectbox(
-            "Utilisateur à encoder",
-            labels
-        )
-
+        selected_label = st.selectbox("Utilisateur à encoder", labels)
         cible = user_map[selected_label]
 
     else:
-
         cible = uid
 
     # ==================================================
@@ -881,13 +888,14 @@ if menu == "Encodage":
     st.divider()
 
     # ==================================================
-    # MODE ÉDITION
+    # ACTIONS
     # ==================================================
     col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button("✏️ Modifier l’encodage"):
             st.session_state.edit_mode = True
+            st.session_state.jours_selectionnes = set()
 
     with col2:
         save_clicked = st.button("💾 Enregistrer")
@@ -907,28 +915,27 @@ if menu == "Encodage":
     jours = calendrier(cible, admin=is_admin)
 
     # ==================================================
-    # SUPPRESSION
+    # 🟢 SUPPRESSION (CORRIGÉE + SORTIE MODE)
     # ==================================================
     if delete_selected and st.session_state.edit_mode:
 
         jours_supprimes = 0
 
-        for day in list(st.session_state.jours_selectionnes):
+        for day, val, existe, validated, sent in jours:
 
-            jour_date = date(annee, mois_num, day)
+            if existe and day.day in st.session_state.jours_selectionnes:
 
-            if not (periode_start <= jour_date <= periode_end):
-                continue
+                supabase.table("trajets") \
+                    .delete() \
+                    .eq("user_id", cible) \
+                    .eq("jour", day.isoformat()) \
+                    .execute()
 
-            supabase.table("trajets") \
-                .delete() \
-                .eq("user_id", cible) \
-                .eq("jour", jour_date.isoformat()) \
-                .execute()
+                jours_supprimes += 1
 
-            jours_supprimes += 1
-
-        st.session_state.jours_selectionnes.clear()
+        # RESET COMPLET
+        st.session_state.jours_selectionnes = set()
+        st.session_state.edit_mode = False   # 🔥 SORTIE DU MODE
 
         st.success(f"{jours_supprimes} jour(s) supprimé(s).")
         st.rerun()
@@ -957,7 +964,7 @@ if menu == "Encodage":
                     "sent_for_validation": False
                 }).execute()
 
-            # SUPPRESSION
+            # SUPPRESSION via décochage
             elif existe and st.session_state.edit_mode and not val:
 
                 supabase.table("trajets") \
@@ -966,12 +973,12 @@ if menu == "Encodage":
                     .eq("jour", jour_iso) \
                     .execute()
 
-            # MODIFICATION TRANSPORT
+            # 🟢 MODIFICATION CORRIGÉE
             elif (
                 existe
                 and st.session_state.edit_mode
-                and val
                 and changer_transport
+                and day.day in st.session_state.jours_selectionnes
             ):
 
                 supabase.table("trajets") \
@@ -983,7 +990,10 @@ if menu == "Encodage":
                     .eq("jour", jour_iso) \
                     .execute()
 
+        # RESET
         st.session_state.edit_mode = False
+        st.session_state.jours_selectionnes = set()
+
         st.success("Encodage enregistré.")
         st.rerun()
 
@@ -1003,6 +1013,7 @@ if menu == "Encodage":
 
             st.success("Période envoyée pour validation.")
             st.rerun()
+
 
 
 if menu == "Utilisateurs":
@@ -1454,7 +1465,6 @@ if menu == "Exports":
     from datetime import datetime, timedelta
 
     mois_str = f"{annee}-{mois_num:02d}"
-
     # ==================================================
     # 🔥 DATE DE RÉFÉRENCE (CHOISIE PAR L'UTILISATEUR)
     # ==================================================
@@ -1687,19 +1697,23 @@ if menu == "Exports":
     # ==================================================
     st.dataframe(df, width="stretch")
 
-# ==================================================
-#  EXPORT EXCEL 
-# ==================================================
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 
-buffer = io.BytesIO()
 
-with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-    df.to_excel(writer, index=False, sheet_name="Indemnités")
 
-    workbook = writer.book
-    worksheet = writer.sheets["Indemnités"]
+
+    # ==================================================
+    #  EXPORT EXCEL 
+    # ==================================================
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    buffer = io.BytesIO()
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Indemnités")
+
+        workbook = writer.book
+        worksheet = writer.sheets["Indemnités"]
 
     # ============================
     # STYLES
@@ -1767,13 +1781,13 @@ with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         adjusted_width = max_length + 3
         worksheet.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
 
-buffer.seek(0)
+    buffer.seek(0)
 
-st.download_button(
-    "📥 Télécharger l’export Excel",
-    buffer,
-    file_name=f"export_indemnites_{mois_str}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    st.download_button(
+        "📥 Télécharger l’export Excel",
+        buffer,
+        file_name=f"export_indemnites_{mois_str}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
 
