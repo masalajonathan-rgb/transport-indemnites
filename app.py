@@ -820,8 +820,20 @@ send_clicked = False
 
 
 
+# ==================================================
+# 🔍 DETECTION MOBILE
+# ==================================================
+def is_mobile():
+    try:
+        ua = st.context.headers.get("user-agent", "").lower()
+        return any(x in ua for x in ["iphone", "android", "mobile"])
+    except:
+        return False
+
 
 if menu == "Encodage":
+
+    mobile = is_mobile()
 
     st.header(
         f"Encodage des trajets — "
@@ -830,7 +842,7 @@ if menu == "Encodage":
     st.divider()
 
     # ==================================================
-    # INIT STATE (sécurisé)
+    # INIT STATE
     # ==================================================
     if "edit_mode" not in st.session_state:
         st.session_state.edit_mode = False
@@ -839,49 +851,38 @@ if menu == "Encodage":
         st.session_state.jours_selectionnes = set()
 
     # ==================================================
-    # UTILISATEUR CIBLE
+    # UTILISATEUR
     # ==================================================
     if is_admin:
 
-        res_users = (
-            supabase
-            .table("users")
+        users = (
+            supabase.table("users")
             .select("id, prenom, nom")
             .neq("login", "admin")
             .order("nom")
             .execute()
+            .data or []
         )
 
-        users = res_users.data or []
+        labels = [f"{u['prenom']} {u['nom']}" for u in users]
+        user_map = {f"{u['prenom']} {u['nom']}": u["id"] for u in users}
 
-        if not users:
-            st.warning("Aucun utilisateur disponible.")
-            st.stop()
-
-        labels = []
-        user_map = {}
-
-        for u in users:
-            label = f"{u['prenom']} {u['nom']}"
-            labels.append(label)
-            user_map[label] = u["id"]
-
-        selected_label = st.selectbox("Utilisateur à encoder", labels)
+        selected_label = st.selectbox("Utilisateur", labels)
         cible = user_map[selected_label]
 
     else:
         cible = uid
 
     # ==================================================
-    # TRANSPORT PAR DÉFAUT
+    # TRANSPORT
     # ==================================================
-    transport_global = st.selectbox(
-        "Moyen de transport pour les nouveaux jours",
-        TRANSPORTS
-    )
+    if mobile:
+        transport_global = st.radio("Transport", TRANSPORTS, horizontal=True)
+    else:
+        transport_global = st.selectbox("Transport", TRANSPORTS)
 
     changer_transport = st.checkbox(
-        "Changer le transport des jours existants sélectionnés",
+        "Modifier les jours sélectionnés",
         value=False
     )
 
@@ -892,36 +893,92 @@ if menu == "Encodage":
     # ==================================================
     col1, col2, col3 = st.columns(3)
 
-    with col1:
-        if st.button("✏️ Modifier l’encodage"):
-            st.session_state.edit_mode = True
-            st.session_state.jours_selectionnes = set()
+    if col1.button("✏️ Modifier", use_container_width=True):
+        st.session_state.edit_mode = True
+        st.session_state.jours_selectionnes = set()
 
-    with col2:
-        save_clicked = st.button("💾 Enregistrer")
-
-    with col3:
-        delete_selected = st.button("🗑 Supprimer sélection")
+    save_clicked = col2.button("💾 Enregistrer", use_container_width=True)
+    delete_clicked = col3.button("🗑 Supprimer", use_container_width=True)
 
     if st.session_state.edit_mode:
-        st.info(
-            "Mode modification actif : sélectionnez les jours existants "
-            "puis cliquez sur Enregistrer ou Supprimer."
-        )
+        st.info("Sélectionnez les jours puis appliquez.")
 
     # ==================================================
-    # CALENDRIER
+    # DATA
     # ==================================================
-    jours = calendrier(cible, admin=is_admin)
+    rows = (
+        supabase.table("trajets")
+        .select("jour, transport")
+        .eq("user_id", cible)
+        .gte("jour", periode_start.isoformat())
+        .lte("jour", periode_end.isoformat())
+        .execute()
+        .data or []
+    )
+
+    data = {
+        date.fromisoformat(r["jour"]): r["transport"]
+        for r in rows
+    }
 
     # ==================================================
-    # 🟢 SUPPRESSION (CORRIGÉE + SORTIE MODE)
+    # GENERATION JOURS
     # ==================================================
-    if delete_selected and st.session_state.edit_mode:
+    jours = []
+    current = periode_start
 
-        jours_supprimes = 0
+    while current <= periode_end:
+        existe = current in data
+        jours.append((current, existe))
+        current += timedelta(days=1)
 
-        for day, val, existe, validated, sent in jours:
+    # ==================================================
+    # 📱 MODE MOBILE
+    # ==================================================
+    if mobile:
+
+        for day, existe in jours:
+
+            if day.weekday() >= 5:
+                continue
+
+            col1, col2 = st.columns([3, 1])
+
+            with col1:
+                emoji = {
+                    "Voiture": "🚗",
+                    "Vélo": "🚲",
+                    "Transport": "🚌"
+                }.get(data.get(day, ""), "")
+
+                st.write(f"{day.strftime('%A %d/%m')} {emoji}")
+
+            with col2:
+                selected = st.checkbox("", key=f"m_{day}")
+
+            if selected:
+                st.session_state.jours_selectionnes.add(day.day)
+            else:
+                st.session_state.jours_selectionnes.discard(day.day)
+
+    # ==================================================
+    # 💻 MODE DESKTOP
+    # ==================================================
+    else:
+        jours = calendrier(cible, admin=is_admin)
+
+    st.divider()
+
+    # ==================================================
+    # 🟢 SUPPRESSION
+    # ==================================================
+    if delete_clicked and st.session_state.edit_mode:
+
+        count = 0
+
+        for day, existe in jours if mobile else [
+            (d, e) for d, _, e, _, _ in jours
+        ]:
 
             if existe and day.day in st.session_state.jours_selectionnes:
 
@@ -931,29 +988,32 @@ if menu == "Encodage":
                     .eq("jour", day.isoformat()) \
                     .execute()
 
-                jours_supprimes += 1
+                count += 1
 
-        # RESET COMPLET
+        st.session_state.edit_mode = False
         st.session_state.jours_selectionnes = set()
-        st.session_state.edit_mode = False   # 🔥 SORTIE DU MODE
 
-        st.success(f"{jours_supprimes} jour(s) supprimé(s).")
+        st.success(f"{count} jour(s) supprimé(s)")
         st.rerun()
 
     # ==================================================
-    # ENREGISTREMENT
+    # 💾 ENREGISTREMENT
     # ==================================================
     if save_clicked:
 
-        for day, val, existe, validated, sent in jours:
+        for day, existe in jours if mobile else [
+            (d, v) for d, v, _, _, _ in jours
+        ]:
 
             jour_iso = day.isoformat()
 
             if not (periode_start <= day <= periode_end):
                 continue
 
+            selected = day.day in st.session_state.jours_selectionnes
+
             # AJOUT
-            if val and not existe:
+            if selected and not existe:
 
                 supabase.table("trajets").insert({
                     "user_id": cible,
@@ -964,21 +1024,12 @@ if menu == "Encodage":
                     "sent_for_validation": False
                 }).execute()
 
-            # SUPPRESSION via décochage
-            elif existe and st.session_state.edit_mode and not val:
-
-                supabase.table("trajets") \
-                    .delete() \
-                    .eq("user_id", cible) \
-                    .eq("jour", jour_iso) \
-                    .execute()
-
-            # 🟢 MODIFICATION CORRIGÉE
+            # MODIF
             elif (
                 existe
                 and st.session_state.edit_mode
                 and changer_transport
-                and day.day in st.session_state.jours_selectionnes
+                and selected
             ):
 
                 supabase.table("trajets") \
@@ -990,19 +1041,18 @@ if menu == "Encodage":
                     .eq("jour", jour_iso) \
                     .execute()
 
-        # RESET
         st.session_state.edit_mode = False
         st.session_state.jours_selectionnes = set()
 
-        st.success("Encodage enregistré.")
+        st.success("Encodage enregistré")
         st.rerun()
 
     # ==================================================
-    # ENVOI POUR VALIDATION
+    # ENVOI
     # ==================================================
     if not is_admin and not st.session_state.edit_mode:
 
-        if st.button("📤 Envoyer pour validation"):
+        if st.button("📤 Envoyer", use_container_width=True):
 
             supabase.table("trajets") \
                 .update({"sent_for_validation": True}) \
@@ -1011,10 +1061,8 @@ if menu == "Encodage":
                 .lte("jour", periode_end.isoformat()) \
                 .execute()
 
-            st.success("Période envoyée pour validation.")
+            st.success("Envoyé")
             st.rerun()
-
-
 
 if menu == "Utilisateurs":
 
