@@ -94,12 +94,24 @@ def get_periode_reference(annee: int, mois: int):
         .execute()
         .data
     )
+
+
+
+
 def total_mois_courant(user_id, annee, mois, km):
     """
-    Calcul du mois M : du 01/M au 20/M
+    Calcul du mois :
+    - 01 → 20 = paiement principal
+    - 21 → fin du mois = complément/régularisation
     """
+
+    # =====================================
+    # 01 → FIN DU MOIS
+    # =====================================
+    dernier_jour = calendar.monthrange(annee, mois)[1]
+
     start = date(annee, mois, 1)
-    end = date(annee, mois, 20)
+    end = date(annee, mois, dernier_jour)
 
     rows = (
         supabase
@@ -116,10 +128,16 @@ def total_mois_courant(user_id, annee, mois, km):
         return 0.0, 0.0
 
     df = pd.DataFrame(rows)
+
+    # =====================================
+    # CALCUL
+    # =====================================
     brut = (df["transport"].map(TAUX) * km).sum()
+
     plafonne = min(brut, PLAFOND_MENSUEL)
 
     return round(brut, 2), round(plafonne, 2)
+
 
 
 
@@ -184,7 +202,7 @@ def valider_mois(
     regul, mois_prec = calcul_regularisation_mois_precedent(
         user_id,
         mois_courant,
-        plafonne
+        brut
     )
 
     # =============================
@@ -315,70 +333,37 @@ def total_deja_paye(user_id, mois):
     return round(total, 2)
 
 
-
 def calcul_regularisation_mois_precedent(
     user_id,
     mois_courant,
     montant_mois_courant
 ):
-    """
-    Régularisation basée UNIQUEMENT sur :
-    21 → fin du mois précédent
-    """
-
-    from calendar import monthrange
 
     an, m = map(int, mois_courant.split("-"))
 
-    # Janvier = pas de mois précédent
+    # =========================
+    # JANVIER = PAS DE MOIS PRÉCÉDENT
+    # =========================
     if m == 1:
         return 0.0, None
 
     mois_prec = f"{an}-{m-1:02d}"
 
     # =========================
-    # PÉRIODE 21 → FIN DU MOIS
+    # TOTAL DÉJÀ PAYÉ
+    # (validation + anciennes régularisations)
     # =========================
-    dernier_jour = monthrange(an, m - 1)[1]
-
-    prev_start = date(an, m - 1, 21)
-    prev_end = date(an, m - 1, dernier_jour)
+    deja_paye = total_deja_paye(user_id, mois_prec)
 
     # =========================
-    # TRAJETS RÉELS
-    # =========================
-    rows = (
-        supabase
-        .table("trajets")
-        .select("transport, km_utilise")
-        .eq("user_id", user_id)
-        .gte("jour", prev_start.isoformat())
-        .lte("jour", prev_end.isoformat())
-        .execute()
-        .data
-    )
-
-    if not rows:
-        return 0.0, mois_prec
-
-    df = pd.DataFrame(rows)
-
-    # =========================
-    # CALCUL INDEMNITÉ RÉELLE
-    # =========================
-    df["taux"] = df["transport"].map(TAUX)
-    df["km_effectif"] = df["km_utilise"].fillna(0)
-    df["indemnite"] = df["taux"] * df["km_effectif"]
-    
-
-    deja_paye = df["indemnite"].sum()
-
-    # =========================
-    # SI PLAFOND DÉJÀ ATTEINT
+    # SI PLAFOND ATTEINT
     # =========================
     if deja_paye >= PLAFOND_MENSUEL:
         return 0.0, mois_prec
 
+    # =========================
+    # MANQUE À COMPLÉTER
+    # =========================
     manque = PLAFOND_MENSUEL - deja_paye
 
     # =========================
@@ -387,6 +372,9 @@ def calcul_regularisation_mois_precedent(
     regul = min(montant_mois_courant, manque)
 
     return round(regul, 2), mois_prec
+
+
+
 
 def total_mois_comptable(user_id, mois_comptable, km):
     """
@@ -1455,7 +1443,7 @@ if menu == "Validation":
     regul, mois_prec = calcul_regularisation_mois_precedent(
         user_id,
         f"{annee}-{mois_num:02d}",
-        plafonne
+        brut
     )
 
     total_simule = round(plafonne + regul, 2)
@@ -1511,36 +1499,72 @@ if menu == "Exports":
     st.header("📊 Export mensuel des indemnités")
     st.divider()
 
-    from datetime import datetime, timedelta
+    from calendar import monthrange
+    from openpyxl.styles import (
+        Font,
+        PatternFill,
+        Alignment,
+        Border,
+        Side
+    )
+    from openpyxl.utils import get_column_letter
 
     mois_str = f"{annee}-{mois_num:02d}"
-    # ==================================================
-    # 🔥 DATE DE RÉFÉRENCE (CHOISIE PAR L'UTILISATEUR)
-    # ==================================================
-    date_reference = st.date_input(
-        "📅 Date de référence (situation arrêtée au)",
-        value=date(annee, mois_num, 1) - timedelta(days=1)
-    )
 
-    cutoff = datetime.combine(date_reference, datetime.max.time())
+    nom_mois = MOIS_FR[mois_num - 1]
+
+    # ==================================================
+    # MOIS PRECEDENT
+    # ==================================================
+    prev_annee = annee if mois_num > 1 else annee - 1
+    prev_mois = mois_num - 1 if mois_num > 1 else 12
+
+    mois_prec = f"{prev_annee}-{prev_mois:02d}"
+
+    nom_mois_prec = MOIS_FR[prev_mois - 1]
 
     # ==================================================
     # VALIDATIONS MOIS COURANT
     # ==================================================
-    validations = (
+    validations_current = (
         supabase
         .table("validations")
-        .select("user_id, brut, plafonne")
+        .select("user_id, plafonne")
         .eq("mois", mois_str)
         .execute()
         .data
     )
 
-    if not validations:
-        st.info("Aucune validation pour ce mois.")
+    if not validations_current:
+        st.info("Aucune validation.")
         st.stop()
 
-    user_ids = [v["user_id"] for v in validations]
+    user_ids = [
+        v["user_id"]
+        for v in validations_current
+    ]
+
+    validation_current_map = {
+        v["user_id"]: float(v["plafonne"])
+        for v in validations_current
+    }
+
+    # ==================================================
+    # VALIDATIONS MOIS PRECEDENT
+    # ==================================================
+    validations_prev = (
+        supabase
+        .table("validations")
+        .select("user_id, plafonne")
+        .eq("mois", mois_prec)
+        .execute()
+        .data
+    )
+
+    validation_prev_map = {
+        v["user_id"]: float(v["plafonne"])
+        for v in validations_prev
+    }
 
     # ==================================================
     # USERS
@@ -1554,126 +1578,97 @@ if menu == "Exports":
         .data
     )
 
-    user_map = {u["id"]: u for u in users}
+    user_map = {
+        u["id"]: u
+        for u in users
+    }
 
     # ==================================================
-    # REGULARISATIONS
+    # PERIODE 21 -> FIN MOIS PRECEDENT
     # ==================================================
-    regs = (
-        supabase
-        .table("regularisations")
-        .select("user_id, montant")
-        .eq("mois_cible", mois_str)
-        .execute()
-        .data
+    prev_start = date(
+        prev_annee,
+        prev_mois,
+        21
     )
 
-    reg_map = {}
-    for r in regs:
-        reg_map.setdefault(r["user_id"], 0)
-        reg_map[r["user_id"]] += float(r["montant"])
+    dernier_jour_prev = monthrange(
+        prev_annee,
+        prev_mois
+    )[1]
 
-    # ==================================================
-    # MOIS PRÉCÉDENT
-    # ==================================================
-    prev_annee = annee if mois_num > 1 else annee - 1
-    prev_mois = mois_num - 1 if mois_num > 1 else 12
-
-    from calendar import monthrange
-
-    prev_start = date(annee, mois_num - 1, 21)
-
-    dernier_jour = monthrange(annee, mois_num - 1)[1]
-
-    prev_end = date(annee, mois_num - 1, dernier_jour)
-    mois_prec = f"{annee}-{mois_num - 1:02d}"
-
-    # ==================================================
-    # 🔥 RATTRAPAGE BASÉ SUR DATE CHOISIE
-    # ==================================================
-    validations_retard_raw = (
-        supabase
-        .table("validations")
-        .select("user_id, plafonne, validated_at")
-        .eq("mois", mois_prec)
-        .execute()
-        .data
+    prev_end = date(
+        prev_annee,
+        prev_mois,
+        dernier_jour_prev
     )
 
-    retard_map = {}
-    users_retard = set()
-
-    for v in validations_retard_raw:
-
-        if not v.get("validated_at"):
-            continue
-
-        try:
-            dt = datetime.fromisoformat(
-                v["validated_at"].replace("Z", "+00:00")
-            ).replace(tzinfo=None)
-        except:
-            continue
-
-        if dt > cutoff:
-
-            uid_v = v["user_id"]
-            users_retard.add(uid_v)
-
-            retard_map.setdefault(uid_v, 0)
-            retard_map[uid_v] += float(v["plafonne"])
-
     # ==================================================
-    # TRAJETS
+    # TRAJETS MOIS COURANT
     # ==================================================
     trajets_current = (
-    supabase
-    .table("trajets")
-    .select("user_id, transport")
-    .in_("user_id", user_ids)
-    .gte("jour", date(annee, mois_num, 1).isoformat())
-    .lte("jour", date(annee, mois_num, 20).isoformat())
-    .execute()
-    .data
-)
-
-    trajets_prev = (
-    supabase
-    .table("trajets")
-    .select("user_id, transport")
-    .in_("user_id", user_ids)
-
-    .gte("jour", prev_start.isoformat())
-    .lte("jour", prev_end.isoformat())
-    .execute()
-    .data
-)
-
-    trajets_retard = []
-
-    for uid_v in users_retard:
-
-        trajets_user = (
-            supabase
-            .table("trajets")
-            .select("user_id, transport")
-            .eq("user_id", uid_v)
-            .gte("jour", prev_start.isoformat())
-            .lte("jour", prev_end.isoformat())
-            .execute()
-            .data
+        supabase
+        .table("trajets")
+        .select("user_id, transport")
+        .in_("user_id", user_ids)
+        .gte(
+            "jour",
+            date(
+                annee,
+                mois_num,
+                1
+            ).isoformat()
         )
-
-        trajets_retard.extend(trajets_user)
+        .lte(
+            "jour",
+            date(
+                annee,
+                mois_num,
+                20
+            ).isoformat()
+        )
+        .execute()
+        .data
+    )
 
     # ==================================================
-    # AGRÉGATION
+    # TRAJETS 21 -> FIN MOIS PRECEDENT
+    # ==================================================
+    trajets_prev = (
+        supabase
+        .table("trajets")
+        .select("user_id, transport")
+        .in_("user_id", user_ids)
+        .gte(
+            "jour",
+            prev_start.isoformat()
+        )
+        .lte(
+            "jour",
+            prev_end.isoformat()
+        )
+        .execute()
+        .data
+    )
+
+    # ==================================================
+    # AGREGATION
     # ==================================================
     def aggregate(df):
-        if df.empty:
-            return pd.DataFrame(columns=["user_id"] + TRANSPORTS)
 
-        agg = df.groupby(["user_id", "transport"]).size().reset_index(name="nb")
+        if df.empty:
+            return pd.DataFrame(
+                columns=["user_id"] + TRANSPORTS
+            )
+
+        agg = (
+            df
+            .groupby(
+                ["user_id", "transport"]
+            )
+            .size()
+            .reset_index(name="nb")
+        )
 
         pivot = agg.pivot(
             index="user_id",
@@ -1683,45 +1678,217 @@ if menu == "Exports":
 
         return pivot.reset_index()
 
-    counts_current = aggregate(pd.DataFrame(trajets_current))
-    counts_prev = aggregate(pd.DataFrame(trajets_prev))
-    counts_retard = aggregate(pd.DataFrame(trajets_retard))
+    counts_current = aggregate(
+        pd.DataFrame(trajets_current)
+    )
+
+    counts_prev = aggregate(
+        pd.DataFrame(trajets_prev)
+    )
 
     # ==================================================
-    # CONSTRUCTION
+    # CONSTRUCTION EXPORT
     # ==================================================
     lignes = []
 
-    for v in validations:
+    for uid_v in user_ids:
 
-        uid_v = v["user_id"]
+        row_cur = counts_current[
+            counts_current["user_id"] == uid_v
+        ]
 
-        row_cur = counts_current[counts_current["user_id"] == uid_v]
-        row_prev = counts_prev[counts_prev["user_id"] == uid_v]
-        row_retard = counts_retard[counts_retard["user_id"] == uid_v]
+        row_prev = counts_prev[
+            counts_prev["user_id"] == uid_v
+        ]
 
-        row_cur = row_cur.iloc[0] if not row_cur.empty else {}
-        row_prev = row_prev.iloc[0] if not row_prev.empty else {}
-        row_retard = row_retard.iloc[0] if not row_retard.empty else {}
+        row_cur = (
+            row_cur.iloc[0]
+            if not row_cur.empty else {}
+        )
 
-        regul = reg_map.get(uid_v, 0)
-        retard = retard_map.get(uid_v, 0)
+        row_prev = (
+            row_prev.iloc[0]
+            if not row_prev.empty else {}
+        )
 
+        km_user = float(
+            user_map[uid_v]["km"]
+        )
+
+        # ==========================================
+        # DEJA PAYE MOIS PRECEDENT
+        # ==========================================
+        deja_recu_avril = validation_prev_map.get(
+            uid_v,
+            0
+        )
+
+        # ==========================================
+        # TRAJETS 21 -> FIN MOIS PRECEDENT
+        # ==========================================
+        rows_regul = (
+            supabase
+            .table("trajets")
+            .select("transport")
+            .eq("user_id", uid_v)
+            .gte(
+                "jour",
+                prev_start.isoformat()
+            )
+            .lte(
+                "jour",
+                prev_end.isoformat()
+            )
+            .execute()
+            .data
+        )
+
+        montant_regul = 0
+
+        if rows_regul:
+
+            df_regul = pd.DataFrame(
+                rows_regul
+            )
+
+            montant_regul = (
+                df_regul["transport"]
+                .map(TAUX)
+                * km_user
+            ).sum()
+
+        # ==========================================
+        # MANQUE MOIS PRECEDENT
+        # ==========================================
+        manque_avril = max(
+            0,
+            PLAFOND_MENSUEL
+            - deja_recu_avril
+        )
+
+        # ==========================================
+        # REGULARISATION
+        # ==========================================
+        regul = min(
+            montant_regul,
+            manque_avril
+        )
+
+        # ==========================================
+        # TOTAL MOIS PRECEDENT
+        # ==========================================
+        total_avril = (
+            deja_recu_avril
+            + regul
+        )
+
+        # ==========================================
+        # MOIS COURANT
+        # ==========================================
+        montant_mois_courant = (
+            validation_current_map.get(
+                uid_v,
+                0
+            )
+        )
+
+        # ==========================================
+        # TOTAL GLOBAL
+        # ==========================================
+        total_global = (
+            total_avril
+            + montant_mois_courant
+        )
+
+        # ==========================================
+        # LIGNE EXPORT
+        # ==========================================
         ligne = {
-            "Nom": user_map[uid_v]["nom"],
-            "Prénom": user_map[uid_v]["prenom"],
-            "KM": user_map[uid_v]["km"],
-            "Indemnité brute (€)": float(v["brut"]),
-            "Indemnité plafonnée (€)": float(v["plafonne"]),
-            "Régularisation (€)": regul,
-            "Rattrapage (€)": retard,
-            "Total payé (€)": float(v["plafonne"]) + regul + retard,
-        }
 
-        for t in TRANSPORTS:
-            ligne[f"{t} (Mois en cours)"] = int(row_cur.get(t, 0))
-            ligne[f"{t} (Mois précédent)"] = int(row_prev.get(t, 0))
-            ligne[f"{t} (Rattrapage)"] = int(row_retard.get(t, 0))
+            "Nom":
+                user_map[uid_v]["nom"],
+
+            "Prénom":
+                user_map[uid_v]["prenom"],
+
+            f"{nom_mois_prec} déjà payé (€)":
+                round(
+                    deja_recu_avril,
+                    2
+                ),
+
+            f"Régularisation {nom_mois_prec} (€)":
+                round(
+                    regul,
+                    2
+                ),
+
+            f"Total {nom_mois_prec} (€)":
+                round(
+                    total_avril,
+                    2
+                ),
+
+            f"À payer {nom_mois} (€)":
+                round(
+                    montant_mois_courant,
+                    2
+                ),
+
+            "Total global (€)":
+                round(
+                    total_global,
+                    2
+                ),
+
+            f"🚗 Voiture ({nom_mois})":
+                int(
+                    row_cur.get(
+                        "Voiture",
+                        0
+                    )
+                ),
+
+            f"🚲 Vélo ({nom_mois})":
+                int(
+                    row_cur.get(
+                        "Vélo",
+                        0
+                    )
+                ),
+
+            f"🚌 Transport ({nom_mois})":
+                int(
+                    row_cur.get(
+                        "Transport",
+                        0
+                    )
+                ),
+
+            f"🚗 Voiture ({nom_mois_prec})":
+                int(
+                    row_prev.get(
+                        "Voiture",
+                        0
+                    )
+                ),
+
+            f"🚲 Vélo ({nom_mois_prec})":
+                int(
+                    row_prev.get(
+                        "Vélo",
+                        0
+                    )
+                ),
+
+            f"🚌 Transport ({nom_mois_prec})":
+                int(
+                    row_prev.get(
+                        "Transport",
+                        0
+                    )
+                ),
+        }
 
         lignes.append(ligne)
 
@@ -1735,117 +1902,207 @@ if menu == "Exports":
     for col in df.columns:
 
         if col in [
-            "Nom", "Prénom", "KM",
-            "Indemnité brute (€)",
-            "Indemnité plafonnée (€)",
-            "Régularisation (€)",
-            "Rattrapage (€)",
-            "Total payé (€)"
+            "Nom",
+            "Prénom",
+            f"{nom_mois_prec} déjà payé (€)",
+            f"Régularisation {nom_mois_prec} (€)",
+            f"Total {nom_mois_prec} (€)",
+            f"À payer {nom_mois} (€)",
+            "Total global (€)"
         ]:
             continue
 
         if df[col].sum() == 0:
             cols_to_drop.append(col)
 
-    df = df.drop(columns=cols_to_drop)
+    df = df.drop(
+        columns=cols_to_drop
+    )
 
     # ==================================================
     # AFFICHAGE
     # ==================================================
-    st.dataframe(df, width="stretch")
-
-
-
-
-
-    # ==================================================
-    #  EXPORT EXCEL 
-    # ==================================================
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
-
-    buffer = io.BytesIO()
-
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Indemnités")
-
-        workbook = writer.book
-        worksheet = writer.sheets["Indemnités"]
-
-    # ============================
-    # STYLES
-    # ============================
-    header_font = Font(bold=True)
-    bold_font = Font(bold=True)
-
-    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    orange_fill = PatternFill(start_color="FFD966", end_color="FFD966", fill_type="solid")
-
-    center_align = Alignment(horizontal="center", vertical="center")
-
-    thin_border = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin")
+    st.dataframe(
+        df,
+        width="stretch"
     )
 
-    # ============================
-    # HEADER STYLE
-    # ============================
-    for col in range(1, len(df.columns) + 1):
-        cell = worksheet.cell(row=1, column=col)
-        cell.font = header_font
-        cell.alignment = center_align
-        cell.border = thin_border
+    # ==================================================
+    # EXPORT EXCEL
+    # ==================================================
+    buffer = io.BytesIO()
 
-    # ============================
-    # DATA STYLE
-    # ============================
-    for row in range(2, len(df) + 2):
-        for col in range(1, len(df.columns) + 1):
-            cell = worksheet.cell(row=row, column=col)
-            cell.border = thin_border
+    with pd.ExcelWriter(
+        buffer,
+        engine="openpyxl"
+    ) as writer:
 
-    # ============================
-    # MISE EN COULEUR DES COLONNES IMPORTANTES
-    # ============================
-    for col_idx, col_name in enumerate(df.columns, start=1):
+        df.to_excel(
+            writer,
+            index=False,
+            sheet_name="Indemnités"
+        )
 
-        if "Total payé" in col_name or "Indemnité plafonnée" in col_name:
-            for row in range(2, len(df) + 2):
-                cell = worksheet.cell(row=row, column=col_idx)
-                cell.fill = green_fill
-                cell.font = bold_font
+        workbook = writer.book
+        worksheet = writer.sheets[
+            "Indemnités"
+        ]
 
-        if "Rattrapage" in col_name or "Régularisation" in col_name:
-            for row in range(2, len(df) + 2):
-                cell = worksheet.cell(row=row, column=col_idx)
-                cell.fill = orange_fill
-                cell.font = bold_font
+        # ==========================================
+        # COULEURS
+        # ==========================================
+        header_fill = PatternFill(
+            start_color="1F4E78",
+            end_color="1F4E78",
+            fill_type="solid"
+        )
 
-    # ============================
-    # AUTO WIDTH COLONNES
-    # ============================
-    for col_idx, col_name in enumerate(df.columns, start=1):
-        max_length = len(str(col_name))
+        deja_fill = PatternFill(
+            start_color="D9EAD3",
+            end_color="D9EAD3",
+            fill_type="solid"
+        )
 
-        for row in range(2, len(df) + 2):
-            val = worksheet.cell(row=row, column=col_idx).value
-            if val:
-                max_length = max(max_length, len(str(val)))
+        regul_fill = PatternFill(
+            start_color="FCE5CD",
+            end_color="FCE5CD",
+            fill_type="solid"
+        )
 
-        adjusted_width = max_length + 3
-        worksheet.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
+        total_fill = PatternFill(
+            start_color="CFE2F3",
+            end_color="CFE2F3",
+            fill_type="solid"
+        )
+
+        payer_fill = PatternFill(
+            start_color="FFF2CC",
+            end_color="FFF2CC",
+            fill_type="solid"
+        )
+
+        white_bold = Font(
+            bold=True,
+            color="FFFFFF"
+        )
+
+        center = Alignment(
+            horizontal="center",
+            vertical="center"
+        )
+
+        thin = Side(style="thin")
+
+        border = Border(
+            left=thin,
+            right=thin,
+            top=thin,
+            bottom=thin
+        )
+
+        # ==========================================
+        # HEADER
+        # ==========================================
+        for col in range(
+            1,
+            len(df.columns) + 1
+        ):
+
+            cell = worksheet.cell(
+                row=1,
+                column=col
+            )
+
+            cell.fill = header_fill
+            cell.font = white_bold
+            cell.alignment = center
+            cell.border = border
+
+        # ==========================================
+        # CELLULES
+        # ==========================================
+        for row in range(
+            2,
+            len(df) + 2
+        ):
+
+            for col in range(
+                1,
+                len(df.columns) + 1
+            ):
+
+                cell = worksheet.cell(
+                    row=row,
+                    column=col
+                )
+
+                cell.border = border
+
+                col_name = df.columns[
+                    col - 1
+                ]
+
+                if "déjà payé" in col_name:
+                    cell.fill = deja_fill
+
+                if "Régularisation" in col_name:
+                    cell.fill = regul_fill
+
+                if "À payer" in col_name:
+                    cell.fill = payer_fill
+
+                if "Total" in col_name:
+                    cell.fill = total_fill
+
+        # ==========================================
+        # AUTO WIDTH
+        # ==========================================
+        for col_idx, col_name in enumerate(
+            df.columns,
+            start=1
+        ):
+
+            max_len = len(
+                str(col_name)
+            )
+
+            for row in range(
+                2,
+                len(df) + 2
+            ):
+
+                value = worksheet.cell(
+                    row=row,
+                    column=col_idx
+                ).value
+
+                if value is not None:
+
+                    max_len = max(
+                        max_len,
+                        len(str(value))
+                    )
+
+            worksheet.column_dimensions[
+                get_column_letter(
+                    col_idx
+                )
+            ].width = max_len + 4
 
     buffer.seek(0)
 
     st.download_button(
         "📥 Télécharger l’export Excel",
         buffer,
-        file_name=f"export_indemnites_{mois_str}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+        file_name=(
+            f"export_"
+            f"{mois_str}.xlsx"
+        ),
+        mime=(
+            "application/vnd.openxmlformats-"
+            "officedocument.spreadsheetml.sheet"
+        )
+    )
 
 
 
