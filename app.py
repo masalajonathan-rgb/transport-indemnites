@@ -150,7 +150,6 @@ def total_mois_periode(user_id, periode_start, periode_end, km):
 
     return round(brut, 2), round(plafonne, 2)
 
-
 def valider_mois(
     user_id,
     annee,
@@ -158,17 +157,19 @@ def valider_mois(
     km
 ):
     """
-    Validation d'un mois M avec régularisation automatique du mois M-1
-    + upsert intelligent (pas d'écrasement inutile)
+    Validation d'un mois avec :
+    - recalcul propre
+    - suppression des anciennes régularisations
+    - régularisation basée sur 21 → fin du mois précédent
     """
 
     # =============================
-    # Mois courant
+    # MOIS COURANT
     # =============================
     mois_courant = f"{annee}-{mois:02d}"
 
     # =============================
-    # Calcul mois courant
+    # CALCUL MOIS COURANT
     # =============================
     brut, plafonne = total_mois_courant(
         user_id,
@@ -178,7 +179,7 @@ def valider_mois(
     )
 
     # =============================
-    # Calcul régularisation
+    # CALCUL RÉGULARISATION
     # =============================
     regul, mois_prec = calcul_regularisation_mois_precedent(
         user_id,
@@ -187,7 +188,7 @@ def valider_mois(
     )
 
     # =============================
-    # Préparation données
+    # DONNÉES VALIDATION
     # =============================
     data = {
         "user_id": int(user_id),
@@ -198,7 +199,16 @@ def valider_mois(
     }
 
     # =============================
-    # Vérifier si déjà existant
+    # SUPPRESSION ANCIENNES RÉGULARISATIONS
+    # =============================
+    supabase.table("regularisations") \
+        .delete() \
+        .eq("user_id", user_id) \
+        .eq("mois_cible", mois_courant) \
+        .execute()
+
+    # =============================
+    # VÉRIFIER SI VALIDATION EXISTE
     # =============================
     existing = (
         supabase
@@ -211,9 +221,10 @@ def valider_mois(
     )
 
     # =============================
-    # SI IDENTIQUE → ne rien faire
+    # SI IDENTIQUE → PAS D'UPDATE
     # =============================
     if existing:
+
         old = existing[0]
 
         if (
@@ -221,16 +232,17 @@ def valider_mois(
             and float(old["plafonne"]) == data["plafonne"]
             and float(old["km_utilise"]) == data["km_utilise"]
         ):
+
             return {
                 "mois": mois_courant,
                 "brut": data["brut"],
                 "plafonne": data["plafonne"],
-                "regularisation": 0,
-                "total_paye": data["plafonne"]
+                "regularisation": regul,
+                "total_paye": round(data["plafonne"] + regul, 2)
             }
 
     # =============================
-    # UPSERT (sécurisé)
+    # UPSERT VALIDATION
     # =============================
     supabase.table("validations").upsert(
         data,
@@ -238,9 +250,10 @@ def valider_mois(
     ).execute()
 
     # =============================
-    # Enregistrement régularisation
+    # INSERT RÉGULARISATION
     # =============================
     if regul > 0 and mois_prec:
+
         supabase.table("regularisations").insert({
             "user_id": int(user_id),
             "mois_source": mois_prec,
@@ -249,13 +262,13 @@ def valider_mois(
         }).execute()
 
     # =============================
-    # Résultat final
+    # RÉSULTAT FINAL
     # =============================
     return {
         "mois": mois_courant,
-        "brut": data["brut"],
-        "plafonne": data["plafonne"],
-        "regularisation": float(regul),
+        "brut": round(data["brut"], 2),
+        "plafonne": round(data["plafonne"], 2),
+        "regularisation": round(regul, 2),
         "total_paye": round(data["plafonne"] + regul, 2)
     }
 
@@ -303,40 +316,77 @@ def total_deja_paye(user_id, mois):
 
 
 
-
-
 def calcul_regularisation_mois_precedent(
     user_id,
     mois_courant,
     montant_mois_courant
 ):
     """
-    Le mois courant complète TOUJOURS le mois précédent si nécessaire.
-    La régularisation est plafonnée par :
-    - le plafond restant du mois précédent
-    - le montant plafonné du mois courant
+    Régularisation basée UNIQUEMENT sur :
+    21 → fin du mois précédent
     """
+
+    from calendar import monthrange
 
     an, m = map(int, mois_courant.split("-"))
 
-    # Janvier n'a pas de mois précédent
+    # Janvier = pas de mois précédent
     if m == 1:
         return 0.0, None
 
     mois_prec = f"{an}-{m-1:02d}"
 
-    # Total réellement payé pour le mois précédent
-    deja_paye = total_deja_paye(user_id, mois_prec)
+    # =========================
+    # PÉRIODE 21 → FIN DU MOIS
+    # =========================
+    dernier_jour = monthrange(an, m - 1)[1]
 
+    prev_start = date(an, m - 1, 21)
+    prev_end = date(an, m - 1, dernier_jour)
+
+    # =========================
+    # TRAJETS RÉELS
+    # =========================
+    rows = (
+        supabase
+        .table("trajets")
+        .select("transport, km_utilise")
+        .eq("user_id", user_id)
+        .gte("jour", prev_start.isoformat())
+        .lte("jour", prev_end.isoformat())
+        .execute()
+        .data
+    )
+
+    if not rows:
+        return 0.0, mois_prec
+
+    df = pd.DataFrame(rows)
+
+    # =========================
+    # CALCUL INDEMNITÉ RÉELLE
+    # =========================
+    df["taux"] = df["transport"].map(TAUX)
+    df["km_effectif"] = df["km_utilise"].fillna(0)
+    df["indemnite"] = df["taux"] * df["km_effectif"]
+    
+
+    deja_paye = df["indemnite"].sum()
+
+    # =========================
+    # SI PLAFOND DÉJÀ ATTEINT
+    # =========================
     if deja_paye >= PLAFOND_MENSUEL:
         return 0.0, mois_prec
 
     manque = PLAFOND_MENSUEL - deja_paye
 
+    # =========================
+    # RÉGULARISATION
+    # =========================
     regul = min(montant_mois_courant, manque)
 
     return round(regul, 2), mois_prec
-
 
 def total_mois_comptable(user_id, mois_comptable, km):
     """
@@ -1362,8 +1412,7 @@ if menu == "Validation":
     # ==================================================
     # DÉTAIL DES JOURS
     # ==================================================
-    start = date(annee, mois_num, 1)
-    end = date(annee, mois_num, 20)
+    start, end, _ = get_periode_reference(annee, mois_num)
 
     res_jours = (
         supabase
@@ -1530,7 +1579,14 @@ if menu == "Exports":
     prev_annee = annee if mois_num > 1 else annee - 1
     prev_mois = mois_num - 1 if mois_num > 1 else 12
 
-    prev_start, prev_end, mois_prec = get_periode_reference(prev_annee, prev_mois)
+    from calendar import monthrange
+
+    prev_start = date(annee, mois_num - 1, 21)
+
+    dernier_jour = monthrange(annee, mois_num - 1)[1]
+
+    prev_end = date(annee, mois_num - 1, dernier_jour)
+    mois_prec = f"{annee}-{mois_num - 1:02d}"
 
     # ==================================================
     # 🔥 RATTRAPAGE BASÉ SUR DATE CHOISIE
@@ -1571,26 +1627,27 @@ if menu == "Exports":
     # TRAJETS
     # ==================================================
     trajets_current = (
-        supabase
-        .table("trajets")
-        .select("user_id, transport")
-        .in_("user_id", user_ids)
-        .gte("jour", date(annee, mois_num, 1).isoformat())
-        .lte("jour", date(annee, mois_num, 20).isoformat())
-        .execute()
-        .data
-    )
+    supabase
+    .table("trajets")
+    .select("user_id, transport")
+    .in_("user_id", user_ids)
+    .gte("jour", date(annee, mois_num, 1).isoformat())
+    .lte("jour", date(annee, mois_num, 20).isoformat())
+    .execute()
+    .data
+)
 
     trajets_prev = (
-        supabase
-        .table("trajets")
-        .select("user_id, transport")
-        .in_("user_id", user_ids)
-        .gte("jour", prev_start.isoformat())
-        .lte("jour", prev_end.isoformat())
-        .execute()
-        .data
-    )
+    supabase
+    .table("trajets")
+    .select("user_id, transport")
+    .in_("user_id", user_ids)
+
+    .gte("jour", prev_start.isoformat())
+    .lte("jour", prev_end.isoformat())
+    .execute()
+    .data
+)
 
     trajets_retard = []
 
@@ -1819,7 +1876,19 @@ if menu == "Historique":
     # ============================
     # MOIS
     # ============================
-    df["mois"] = df["jour"].str[:7]
+    df["jour_date"] = pd.to_datetime(df["jour"]).dt.date
+
+    df["mois"] = df["jour_date"].apply(
+    lambda d: (
+        f"{d.year + 1}-01"
+        if d.day > 20 and d.month == 12
+        else (
+            f"{d.year}-{d.month + 1:02d}"
+            if d.day > 20
+            else f"{d.year}-{d.month:02d}"
+        )
+    )
+)    
 
     # ============================
     # AGRÉGATION FIABLE
