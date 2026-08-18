@@ -917,7 +917,9 @@ if menu == "Encodage":
     # ==================================================
     # ENREGISTREMENT
     # ==================================================
-    if save_clicked:
+    def enregistrer_encodage():
+        """Enregistre les ajouts / suppressions / modifications
+        de la sélection courante du calendrier."""
 
         for day, val, existe, validated, sent in jours:
 
@@ -928,8 +930,6 @@ if menu == "Encodage":
 
             # AJOUT
             if val and not existe:
-                st.write("Utilisateur :", selected_label)
-                st.write("KM cible :", km_cible)
                 supabase.table("trajets").insert({
                     "user_id": cible,
                     "jour": jour_iso,
@@ -965,6 +965,10 @@ if menu == "Encodage":
                     .eq("jour", jour_iso) \
                     .execute()
 
+    if save_clicked:
+
+        enregistrer_encodage()
+
         # RESET
         st.session_state.edit_mode = False
         st.session_state.jours_selectionnes = set()
@@ -979,6 +983,10 @@ if menu == "Encodage":
 
         if st.button("📤 Envoyer pour validation"):
 
+            # Enregistre d'abord les jours cochés mais pas encore
+            # sauvegardés, pour que l'envoi fonctionne en un seul clic.
+            enregistrer_encodage()
+
             supabase.table("trajets") \
                 .update({"sent_for_validation": True}) \
                 .eq("user_id", cible) \
@@ -986,7 +994,10 @@ if menu == "Encodage":
                 .lte("jour", periode_end.isoformat()) \
                 .execute()
 
-            st.success("Période envoyée pour validation.")
+            st.session_state.edit_mode = False
+            st.session_state.jours_selectionnes = set()
+
+            st.success("Trajets enregistrés et période envoyée pour validation.")
             st.rerun()
 
 
